@@ -268,7 +268,7 @@ SECTIONS = [
         "BCB, Selic & the real": ["Selic", "Copom", "Galipolo", "Galípolo",
             "Brazil", "Brazilian"],
         "Treasury bond intervention & DI rates": ["Tesouro", "National Treasury",
-            "DI rates", "DI futures", "buyback"],
+            "DI rates", "DI futures", "bond buyback"],
      },
      "queries": [
         'Brazil ("finance minister" OR fiscal OR budget OR debt OR Haddad)',
