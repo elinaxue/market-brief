@@ -541,6 +541,13 @@ def fetch_bloomberg(status: dict) -> list:
     return items
 
 
+def short_google_link(url: str) -> str:
+    """news.google.com/rss/articles/<id>?oc=5 -> news.google.com/articles/<id>
+    (same redirect, fewer characters; Telegram caps total link size per message)."""
+    url = url.split("?", 1)[0]
+    return url.replace("news.google.com/rss/articles/", "news.google.com/articles/")
+
+
 def search_google(query: str, site: str, status: dict) -> list:
     """One Google News search on one site -> [(ts, title, link, source, text)]."""
     if status.get("_google_fails", 0) >= 4 and not status.get("Google News"):
@@ -557,7 +564,7 @@ def search_google(query: str, site: str, status: dict) -> list:
     for e in entries:
         title = e.title.rsplit(" - ", 1)[0].strip()   # drop " - Reuters"
         source = e.get("source", {}).get("title", "") or site
-        items.append((entry_ts(e), title, e.link, source, title))
+        items.append((entry_ts(e), title, short_google_link(e.link), source, title))
     return items
 
 
@@ -852,6 +859,43 @@ def send_telegram(text: str, html_mode: bool = True) -> None:
         raise TelegramError(f"Telegram error {r.status_code}: {r.text[:500]}")
 
 
+TOO_BIG = ("ENTITIES_TOO_LONG", "MESSAGE_TOO_LONG", "message is too long")
+
+
+def split_message(m: str) -> tuple | None:
+    """Split a message in two near the middle, at a section break if possible,
+    otherwise at a line break. Never splits inside a <pre> block's line."""
+    for sep in ("\n\n", "\n"):
+        pieces = m.split(sep)
+        if len(pieces) < 2:
+            continue
+        half, total, cut = 0, len(m), 1
+        for i, piece in enumerate(pieces[:-1], 1):
+            half += len(piece) + len(sep)
+            if half >= total / 2:
+                cut = i
+                break
+        a, b = sep.join(pieces[:cut]), sep.join(pieces[cut:])
+        if sep == "\n" and a.count("<pre>") != a.count("</pre>"):
+            continue                          # would break a price table
+        return a, b
+    return None
+
+
+def send_splitting(m: str, depth: int = 0) -> None:
+    """Send m; if Telegram says it's too big, split it and send the halves."""
+    try:
+        send_telegram(m)
+    except TelegramError as ex:
+        halves = split_message(m) if depth < 3 and any(t in str(ex) for t in TOO_BIG) else None
+        if not halves:
+            raise
+        print(f"[telegram] message too big, splitting ({ex})", file=sys.stderr)
+        for h in halves:
+            send_splitting(h, depth + 1)
+            time.sleep(1)
+
+
 def report_failure(err: str) -> None:
     """Best effort: tell the user on Telegram why the brief failed."""
     print(err, file=sys.stderr)
@@ -901,7 +945,7 @@ if __name__ == "__main__":
     failed = 0
     for i, m in enumerate(messages, 1):
         try:
-            send_telegram(m)
+            send_splitting(m)
         except TelegramError as ex:
             failed += 1
             report_failure(f"Message {i} of {len(messages)} was rejected.\n{ex}\n\n"
