@@ -86,7 +86,6 @@ INDICES = {
 RATES = {
     "UST 5Y":  "^FVX",
     "UST 10Y": "^TNX",
-    "UST 30Y": "^TYX",
     "JGB 2Y":  "MOF:2Y",
     "JGB 10Y": "MOF:10Y",
 }
