@@ -171,30 +171,38 @@ CANDIDATES_PER_SECTION = 20   # newest matches per section sent to Claude
 HEADLINE_MAX = 55   # headlines longer than this are cut to their main clause
 
 # ---- News sections ---------------------------------------------------------
-# Shown in this order. For each section:
-#   topics:   theme -> keywords. A Bloomberg story belongs to the section if
-#             its title/summary contains any keyword (case-insensitive,
-#             whole words). The theme names are also what Claude is told to
-#             prioritise.
-#   queries:  Google News searches (run on Reuters and Bloomberg).
-#             OR between alternatives, "quotes" for exact phrases.
+# Shown in this order. Each section has three kinds of keywords (matched
+# case-insensitively as whole words in the headline and Bloomberg summary):
+#   topics:   theme -> CORE keywords. One core match is enough to include a
+#             story (e.g. "Fed", "BOJ", "Selic").
+#   generic:  words too broad on their own (e.g. "inflation", "peso").
+#             They only count if the story also mentions a `context` word.
+#   context:  the country / market words (e.g. "Japan"). On their own they
+#             never qualify a story, so company news that merely mentions
+#             the country is left out.
+# Stories are ranked by match strength (core hits in the headline count
+# most), then by recency, and the top `max` are shown.
+#   queries:  Google News searches (Reuters + Bloomberg) that feed candidates.
 #   priority: a story matching several sections goes to the one with the
 #             LOWEST number (so "Japan inflation" lands in Japan, not US).
 SECTIONS = [
     {"title": "🇺🇸 US", "max": 6, "priority": 5,
      "topics": {
         "Fed decisions, Warsh & Fed independence": ["Fed", "Federal Reserve",
-            "FOMC", "Fed chair", "Warsh", "rate cut", "rate cuts", "rate hike",
-            "rate hikes", "Fed independence"],
-        "CPI / PCE inflation": ["US CPI", "US inflation", "consumer prices", "PCE"],
+            "FOMC", "Fed chair", "Warsh", "Fed independence", "Powell"],
+        "CPI / PCE inflation": ["US CPI", "US inflation", "PCE"],
         "Payrolls & jobs": ["payrolls", "nonfarm", "jobs report", "jobless claims",
             "US unemployment"],
-        "Midterms & Congress": ["midterm", "midterms", "Congress", "Senate",
-            "House Republicans", "House Democrats", "government shutdown",
-            "debt ceiling"],
-        "Tariffs, Treasuries & White House policy": ["Treasury yields",
-            "Treasuries", "Trump", "White House", "US tariffs"],
+        "Midterms & Congress": ["midterm", "midterms", "House Republicans",
+            "House Democrats", "government shutdown", "debt ceiling"],
+        "Treasuries & White House policy": ["Treasury yields", "Treasuries",
+            "US tariffs", "Bessent"],
      },
+     "generic": ["rate cut", "rate cuts", "rate hike", "rate hikes", "inflation",
+                 "consumer prices", "jobs", "unemployment", "Congress", "Senate",
+                 "tariffs", "election", "economy", "GDP", "yields"],
+     "context": ["US", "U.S.", "United States", "American", "Americans", "Trump",
+                 "White House", "Washington", "Wall Street"],
      "queries": [
         '"Federal Reserve" OR FOMC OR "Fed chair" OR "Fed rate"',
         '"US CPI" OR "US inflation" OR "PCE inflation"',
@@ -207,13 +215,17 @@ SECTIONS = [
      "topics": {
         "BOJ decisions & BOJ speakers": ["BOJ", "Bank of Japan", "Ueda", "Himino"],
         "BOJ board dissents": ["Takata", "Tamura"],
-        "Verbal escalation, rate checks & intervention (MOF, US Treasury)": ["yen",
+        "Verbal escalation, rate checks & intervention (MOF)": ["yen",
             "rate check", "rate checks", "Katayama", "Mimura", "excessive moves",
-            "speculative moves", "Bessent"],
+            "speculative moves"],
         "Takaichi fiscal plans, consumption tax & JGBs": ["Takaichi",
-            "consumption tax", "JGB", "JGBs", "Diet"],
-        "Japan CPI & wages": ["Japan", "Japanese", "shunto"],
+            "consumption tax", "JGB", "JGBs", "shunto"],
      },
+     "generic": ["inflation", "CPI", "wages", "bonds", "bond", "yields", "budget",
+                 "auction", "bond sale",
+                 "fiscal", "stimulus", "intervention", "Diet", "election",
+                 "economy", "GDP", "rate hike"],
+     "context": ["Japan", "Japanese", "Tokyo"],
      "queries": [
         '"Bank of Japan" OR BOJ OR Ueda',
         'yen ("rate check" OR intervention OR excessive OR speculative OR Mimura OR Katayama OR Bessent)',
@@ -222,13 +234,18 @@ SECTIONS = [
      ]},
     {"title": "🇨🇳 China", "max": 5, "priority": 2,
      "topics": {
-        "PBOC, yuan fixing & stimulus": ["PBOC", "yuan", "renminbi", "fixing",
-            "China", "Chinese", "Beijing"],
-        "China deflation (CPI/PPI)": ["China CPI", "China PPI", "deflation"],
-        "Xi, Politburo & US-China": ["Xi", "Politburo"],
+        "PBOC, yuan fixing & stimulus": ["PBOC", "People's Bank of China", "yuan",
+            "renminbi", "yuan fixing"],
+        "China deflation (CPI/PPI)": ["China CPI", "China PPI", "China inflation",
+            "China deflation"],
+        "Xi, Politburo & US-China": ["Xi Jinping", "Politburo", "Five-Year Plan"],
         "Property, trade, steel & iron ore": ["iron ore", "China property",
-            "China exports", "steel output"],
+            "China exports", "China imports", "China trade", "steel output"],
      },
+     "generic": ["stimulus", "deflation", "property", "exports", "imports",
+                 "trade", "tariffs", "economy", "GDP", "PMI", "factory",
+                 "steel", "Xi", "rate cut", "growth", "consumption"],
+     "context": ["China", "Chinese", "Beijing"],
      "queries": [
         'China (PBOC OR yuan OR stimulus OR property OR Politburo)',
         'China (deflation OR PPI OR CPI OR "yuan fixing")',
@@ -237,12 +254,16 @@ SECTIONS = [
     {"title": "🇳🇿 New Zealand", "max": 4, "priority": 2.4,
      "topics": {
         "RBNZ, OCR & hike timing": ["RBNZ", "Reserve Bank of New Zealand",
-            "OCR", "official cash rate", "Breman", "Conway"],
-        "Kiwi dollar & NZ data": ["kiwi", "New Zealand", "NZ dollar", "NZD"],
-        "NZ election (7 Nov)": ["Luxon", "Hipkins", "NZ election"],
-        "Dairy prices (GDT) & Fonterra": ["dairy", "GDT", "Global Dairy Trade",
-            "Fonterra"],
+            "official cash rate", "Breman"],
+        "Kiwi dollar": ["NZ dollar", "NZD", "New Zealand dollar"],
+        "NZ election (7 Nov)": ["Luxon", "Hipkins", "NZ election",
+            "New Zealand election"],
+        "Dairy prices (GDT) & Fonterra": ["GDT", "Global Dairy Trade", "Fonterra"],
      },
+     "generic": ["kiwi", "OCR", "inflation", "CPI", "jobs", "unemployment",
+                 "election", "economy", "GDP", "dairy", "central bank",
+                 "rate hike", "Conway", "budget"],
+     "context": ["New Zealand", "NZ", "Wellington", "Auckland"],
      "queries": [
         'RBNZ OR "Reserve Bank of New Zealand" OR "official cash rate" OR Breman',
         '"New Zealand" (inflation OR election OR "kiwi dollar" OR economy)',
@@ -250,12 +271,14 @@ SECTIONS = [
      ]},
     {"title": "🇦🇺 Australia", "max": 5, "priority": 2.5,
      "topics": {
-        "RBA (hiking cycle), CPI & trimmed mean, jobs": ["RBA", "Bullock",
-            "Hauser", "trimmed mean", "Australia", "Australian",
-            "Australian dollar", "Aussie"],
-        "Iron ore & China demand for Australia": ["iron ore", "BHP", "Rio Tinto",
-            "Fortescue"],
+        "RBA (hiking cycle), CPI & trimmed mean, jobs": ["RBA",
+            "Reserve Bank of Australia", "Bullock", "Hauser", "trimmed mean",
+            "Australian dollar", "Aussie dollar"],
      },
+     "generic": ["inflation", "CPI", "jobs", "unemployment", "wages", "economy",
+                 "GDP", "rate hike", "rate hikes", "budget", "iron ore",
+                 "central bank", "Chalmers"],
+     "context": ["Australia", "Australian", "Aussie", "Canberra", "Sydney"],
      "queries": [
         'RBA OR "Reserve Bank of Australia" OR Bullock OR Hauser',
         'Australia ("monthly CPI" OR "trimmed mean" OR inflation OR jobs OR unemployment)',
@@ -263,15 +286,19 @@ SECTIONS = [
      ]},
     {"title": "🇧🇷 Brazil", "max": 5, "priority": 3,
      "topics": {
-        "Lula's next finance minister & fiscal framework": ["finance minister",
-            "Haddad", "Brazil budget", "Brazil fiscal", "fiscal framework"],
-        "Lula vs Congress, Bolsonaro's election challenge": ["Lula", "Bolsonaro",
-            "Flavio", "Flávio", "electoral court", "TSE"],
+        "Lula's next finance minister & fiscal framework": ["Haddad",
+            "Brazil budget", "Brazil fiscal", "fiscal framework"],
+        "Lula vs Congress, Bolsonaro's election challenge": ["Lula", "Bolsonaro"],
         "BCB, Selic & the real": ["Selic", "Copom", "Galipolo", "Galípolo",
-            "Brazil", "Brazilian"],
-        "Treasury bond intervention & DI rates": ["Tesouro", "National Treasury",
-            "DI rates", "DI futures", "bond buyback"],
+            "Brazilian real", "Brazil real", "Brazil's real"],
+        "Treasury bond intervention & DI rates": ["Tesouro", "DI rates",
+            "DI futures"],
      },
+     "generic": ["finance minister", "fiscal", "budget", "debt", "Congress",
+                 "electoral court", "TSE", "election", "central bank",
+                 "inflation", "economy", "GDP", "bonds", "National Treasury",
+                 "bond buyback", "currency", "real"],
+     "context": ["Brazil", "Brazilian", "Brasilia", "Sao Paulo", "São Paulo"],
      "queries": [
         'Brazil ("finance minister" OR fiscal OR budget OR debt OR Haddad)',
         'Lula (Congress OR cabinet OR Bolsonaro OR "electoral court")',
@@ -280,11 +307,16 @@ SECTIONS = [
      ]},
     {"title": "🇲🇽 Mexico", "max": 5, "priority": 4,
      "topics": {
-        "USMCA annual reviews & US tariffs": ["USMCA", "Ebrard", "Greer",
-            "Mexico tariffs", "annual review"],
-        "Banxico (hawkish turn) & the peso": ["Banxico", "peso"],
-        "Sheinbaum & politics": ["Sheinbaum", "Mexico", "Mexican"],
+        "USMCA annual reviews & US tariffs": ["USMCA", "T-MEC", "Ebrard",
+            "Mexico tariffs"],
+        "Banxico (hawkish turn) & the peso": ["Banxico", "Mexican peso",
+            "Mexico's peso"],
+        "Sheinbaum & politics": ["Sheinbaum"],
      },
+     "generic": ["peso", "tariffs", "trade deal", "trade talks", "annual review",
+                 "Greer", "central bank", "inflation", "economy", "GDP",
+                 "remittances", "cartels", "judicial reform", "budget"],
+     "context": ["Mexico", "Mexican", "Mexico City"],
      "queries": [
         'Mexico (tariffs OR USMCA OR "annual review" OR Ebrard OR Greer)',
         'Mexico (peso OR Banxico OR Sheinbaum)',
@@ -292,24 +324,32 @@ SECTIONS = [
     {"title": "🛢️ Oil & Middle East", "max": 5, "priority": 0,
      "topics": {
         "US-Iran conflict & Strait of Hormuz": ["Iran", "Iranian", "Tehran",
-            "Hormuz", "Middle East", "Israel", "Gulf"],
-        "Oil prices & OPEC": ["oil", "crude", "Brent", "WTI", "OPEC", "OPEC+",
-            "Saudi"],
+            "Hormuz"],
+        "Oil prices & OPEC": ["Brent", "WTI", "OPEC", "OPEC+", "oil prices",
+            "oil price", "crude prices", "crude oil", "oil market"],
      },
+     "generic": ["oil", "crude", "Saudi", "Israel", "Gulf", "tanker", "tankers",
+                 "ceasefire", "strikes", "supply"],
+     "context": ["oil", "crude", "barrel", "barrels", "energy", "Middle East"],
      "queries": [
         'oil (Brent OR crude OR OPEC OR prices)',
         'Iran (US OR strikes OR Hormuz OR ceasefire OR talks)',
      ]},
     {"title": "📈 Global equities & AI trade", "max": 6, "priority": 6,
      "topics": {
-        "AI trade & big tech earnings (drives yen safe-haven flows)": ["AI",
-            "artificial intelligence", "Nvidia", "Alphabet", "Google", "Microsoft",
-            "Meta", "Amazon", "Apple", "OpenAI", "Anthropic", "chipmaker",
-            "chipmakers", "semiconductor", "semiconductors", "SK Hynix",
-            "Samsung", "TSMC", "data center", "data centers"],
-        "Big index moves": ["stocks", "equities", "Wall Street", "S&P 500",
-            "Nasdaq", "selloff", "sell-off", "rally", "record high"],
+        "Big index moves": ["Wall Street", "S&P 500", "Nasdaq", "global stocks",
+            "stock market", "stock markets", "equity markets", "selloff",
+            "sell-off", "record high"],
+        "AI trade & big tech (drives yen safe-haven flows)": ["Nvidia", "AI stocks",
+            "AI trade", "AI bubble", "chipmaker", "chipmakers", "semiconductor",
+            "semiconductors", "SK Hynix", "TSMC", "hyperscalers"],
      },
+     "generic": ["AI", "artificial intelligence", "Alphabet", "Google",
+                 "Microsoft", "Meta", "Amazon", "Apple", "OpenAI", "Anthropic",
+                 "Samsung", "data center", "data centers", "rally", "stocks",
+                 "equities"],
+     "context": ["stocks", "shares", "earnings", "investors", "market", "markets",
+                 "valuations", "capex", "spending"],
      "queries": [
         'stocks ("Wall Street" OR "global markets" OR selloff OR rally OR "record high")',
         '(AI OR "artificial intelligence") (stocks OR earnings OR selloff OR IPO)',
@@ -321,11 +361,15 @@ SECTIONS = [
             "sanctions", "missile", "airstrike", "airstrikes"],
         "Trade wars & export controls": ["tariff", "tariffs", "trade war",
             "export controls"],
-        "Elections & political shocks": ["snap election", "resigns", "impeachment",
-            "state of emergency"],
-        "Defaults & crises": ["default", "debt crisis", "bank failure",
-            "emergency rate"],
+        "Elections & political shocks": ["snap election", "impeachment",
+            "state of emergency", "no-confidence", "no confidence"],
+        "Debt crises & defaults": ["debt crisis", "bank failure",
+            "emergency rate", "sovereign default", "bond rout", "bond selloff"],
      },
+     "generic": ["resigns", "resignation", "default", "downgrade", "election",
+                 "protests", "budget"],
+     "context": ["government", "prime minister", "president", "minister",
+                 "parliament", "sovereign", "debt", "bonds", "rating"],
      "queries": [
         'war OR ceasefire OR invasion OR coup OR sanctions',
         'tariffs OR "trade war" OR "export controls"',
@@ -601,55 +645,172 @@ def search_google(query: str, site: str, status: dict) -> list:
     return items
 
 
+# Not news: videos, audio, podcasts, opinion columns and live blogs.
+SKIP_URL_PARTS = ("/videos/", "/audio/", "/podcasts/", "/opinion/", "/live/",
+                  "/live-blog", "/newsletters/")
+SKIP_TITLE_RX = re.compile(r"^(watch|listen|live|podcast|video|opinion|"
+                           r"newsletter|explainer|quiz)\b|^.{0,40}\bLive Q&A\b",
+                           re.IGNORECASE)
+# A few very common Spanish / Portuguese words; two or more = not English.
+FOREIGN_WORDS = {"de", "la", "el", "los", "las", "que", "en", "y", "para", "con",
+                 "una", "por", "del", "um", "uma", "não", "em", "do", "da", "dos",
+                 "das", "com", "sobre", "qué", "cómo"}
+STOPWORDS = {"the", "a", "an", "of", "to", "in", "on", "for", "and", "as", "at",
+             "by", "with", "is", "are", "be", "its", "it", "from", "after",
+             "amid", "over", "says", "say", "said", "new", "s", "us", "will",
+             "may", "could", "than", "more", "into", "up", "out", "what", "how"}
+
+
+def is_noise(title: str, link: str) -> bool:
+    if any(part in link for part in SKIP_URL_PARTS):
+        return True
+    if SKIP_TITLE_RX.search(title.strip()):
+        return True
+    if "¿" in title or "¡" in title:
+        return True
+    words = re.findall(r"[a-záéíóúãõâêôçñ]+", title.lower())
+    return sum(w in FOREIGN_WORDS for w in words) >= 2
+
+
+def word_set(title: str, link: str = "") -> set:
+    """Content words of a headline (plus the URL slug for Bloomberg links),
+    used to spot the same story worded differently."""
+    text = title
+    m = re.search(r"/\d{4}-\d{2}-\d{2}/([a-z0-9-]+)", link)
+    if m:
+        text += " " + m.group(1).replace("-", " ")
+    words = re.findall(r"[a-z0-9$%]+", text.lower().replace("’", "'"))
+    return {w.rstrip("s") for w in words if len(w) > 2 and w not in STOPWORDS}
+
+
+_ENTITIES = {}
+
+
+def entity_section(token: str):
+    """Which section a one-word name belongs to (fed -> US, rba -> Australia)."""
+    if not _ENTITIES:
+        for sec in SECTIONS:
+            words = [w for kws in sec["topics"].values() for w in kws] + sec.get("context", [])
+            for w in words:
+                if " " not in w and len(w) > 2:
+                    _ENTITIES.setdefault(w.lower().rstrip("s"), sec["title"])
+    return _ENTITIES.get(token)
+
+
+def same_story(a: set, b: set) -> bool:
+    """Same event worded differently? Needs several shared words, and never
+    merges headlines naming different markets ("Fed holds rates" vs "RBA
+    holds rates") or different numbers ("since 1995" vs "since 2011")."""
+    if len(a) < 3 or len(b) < 3:
+        return False
+    only_a, only_b = a - b, b - a
+    secs_a = {entity_section(t) for t in only_a} - {None}
+    secs_b = {entity_section(t) for t in only_b} - {None}
+    if secs_a and secs_b and not (secs_a & secs_b):
+        return False
+    if any(t[0].isdigit() for t in only_a) and any(t[0].isdigit() for t in only_b):
+        return False
+    overlap = len(a & b)
+    jaccard = overlap / len(a | b)
+    contain = overlap / min(len(a), len(b))
+    return (overlap >= 4 and (jaccard >= 0.45 or contain >= 0.6)) or \
+        (overlap >= 3 and jaccard >= 0.6)
+
+
+def section_matchers(sec: dict) -> tuple:
+    core = [w for kws in sec["topics"].values() for w in kws]
+    return (keyword_regex(core),
+            keyword_regex(sec.get("generic") or ["\x00"]),
+            keyword_regex(sec.get("context") or ["\x00"]))
+
+
+def match_score(title: str, text: str, matchers: tuple) -> int:
+    """0 = not relevant. Core keywords in the headline count most; generic
+    keywords count only when a context (country/market) word is present."""
+    core_rx, gen_rx, ctx_rx = matchers
+    core_title = len(set(m.lower() for m in core_rx.findall(title)))
+    core_any = len(set(m.lower() for m in core_rx.findall(text)))
+    has_ctx = bool(ctx_rx.search(text))
+    gen_title = len(set(m.lower() for m in gen_rx.findall(title))) if has_ctx else 0
+    gen_any = len(set(m.lower() for m in gen_rx.findall(text))) if has_ctx else 0
+    if core_any == 0 and gen_any == 0:
+        return 0
+    if core_any == 0 and not (has_ctx and gen_title):
+        return 0          # generic words only in the summary: too weak
+    return 6 * core_title + 2 * (core_any - core_title) + 2 * gen_title + \
+        (gen_any - gen_title)
+
+
 def fetch_candidates() -> tuple:
-    """Collect stories per section.
-    Returns ({section title: [story, ...]}, failed_sources), newest first.
-    A story is a dict: ts, title, link, text."""
+    """Collect stories per section, best match first.
+    Returns ({section title: [story, ...]}, failed_sources).
+    A story is a dict: ts, title, link, text, score."""
     status = {}
     cutoff = time.time() - LOOKBACK_HOURS * 3600
     bloomberg = fetch_bloomberg(status)
 
-    # Match sections in priority order, so a story shared by two sections
-    # lands in the more specific one.
-    seen, out = set(), {}
+    accepted, out = [], {}            # accepted: word sets of stories kept so far
     for sec in sorted(SECTIONS, key=lambda x: x["priority"]):
-        words = [w for kws in sec["topics"].values() for w in kws]
-        rx = keyword_regex(words)
-        pool = [it for it in bloomberg if rx.search(it[4])]
+        matchers = section_matchers(sec)
+        # Without Claude only the top `max` are shown, so only those claim
+        # their story (lower-ranked ones stay free for other sections).
+        limit = CANDIDATES_PER_SECTION if os.environ.get("ANTHROPIC_API_KEY") else sec["max"]
+        pool = list(bloomberg)
         for q in sec["queries"]:
             for site in GOOGLE_SITES:
-                # keep Google results only if they also mention a section keyword
-                pool += [it for it in search_google(q, site, status) if rx.search(it[4])]
+                pool += search_google(q, site, status)
                 time.sleep(0.5)
-        pool = [it for it in pool if not it[0] or it[0] >= cutoff]
-        pool.sort(key=lambda x: x[0], reverse=True)       # newest first
-        stories = []
+
+        scored = []
         for ts, title, link, _src, text in pool:
-            key = re.sub(r"\W+", " ", title.lower()).strip()
-            if key in seen:                                # skip duplicates
+            if ts and ts < cutoff or is_noise(title, link):
                 continue
-            seen.add(key)
-            stories.append({"ts": ts, "title": title, "link": link, "text": text})
-        out[sec["title"]] = stories[:CANDIDATES_PER_SECTION]
+            score = match_score(title, text, matchers)
+            if score:
+                scored.append((score, ts, title, link, text))
+        # Best match first; newest first among equals
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+        stories = []
+        for score, ts, title, link, text in scored:
+            ws = word_set(title, link)
+            if any(same_story(ws, other) for other in accepted):
+                continue                                   # duplicate story
+            accepted.append(ws)
+            stories.append({"ts": ts, "title": title, "link": link,
+                            "text": text, "score": score})
+            if len(stories) >= limit:
+                break
+        out[sec["title"]] = stories
 
     failed = [name for name, ok in status.items()
               if not name.startswith("_") and not ok]
     return out, failed
 
 
+SUBORDINATE = re.compile(r"^(after|while|as|despite|with|if|when|before|"
+                         r"amid|since|because|though|although|once|until|"
+                         r"what|how|why|where)\b", re.IGNORECASE)
+DANGLING = {"a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "as",
+            "at", "by", "with", "from", "is", "are", "its", "it", "that", "his",
+            "her", "their", "be", "was", "were"}
+
+
 def shorten(title: str, limit: int = HEADLINE_MAX) -> str:
-    """Short, skimmable headline: keep the main clause, then trim to `limit`."""
+    """Short, skimmable headline: keep the main clause, then trim to `limit`
+    without leaving a dangling word or a fragment like "After landing in US"."""
     t = re.sub(r"\s+", " ", title).strip()
     if len(t) <= limit:
         return t
-    # Keep the part before a clause break if it says enough on its own,
-    # e.g. "Yen slides as BOJ holds rates" -> "Yen slides".
     for sep in [": ", "; ", " - ", ", ", " as ", " after ", " amid ", " while ",
                 " despite ", " with ", " if ", " on ", " ahead of "]:
         head = re.split(re.escape(sep), t, maxsplit=1, flags=re.IGNORECASE)[0]
-        if 15 <= len(head) <= limit and head != t:
+        if 15 <= len(head) <= limit and head != t and not SUBORDINATE.match(head):
             return head
-    return t[:limit].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
+    words = t[:limit].rsplit(" ", 1)[0].rstrip(",;:-").split(" ")
+    while len(words) > 3 and words[-1].lower().strip("’'\"") in DANGLING:
+        words.pop()
+    return " ".join(words) + "…"
 
 
 def claude_select(cands: dict) -> dict | None:
