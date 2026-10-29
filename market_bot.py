@@ -220,12 +220,14 @@ SECTIONS = [
             "speculative moves"],
         "Takaichi fiscal plans, consumption tax & JGBs": ["Takaichi",
             "consumption tax", "JGB", "JGBs", "shunto"],
+        "Japanese stocks": ["Nikkei", "Topix", "Japanese stocks", "Japan stocks"],
      },
      "generic": ["inflation", "CPI", "wages", "bonds", "bond", "yields", "budget",
                  "auction", "bond sale",
                  "fiscal", "stimulus", "intervention", "Diet", "election",
                  "economy", "GDP", "rate hike"],
      "context": ["Japan", "Japanese", "Tokyo"],
+     # (stocks / shares / equities count as generic for every country section)
      "queries": [
         '"Bank of Japan" OR BOJ OR Ueda',
         'yen ("rate check" OR intervention OR excessive OR speculative OR Mimura OR Katayama OR Bessent)',
@@ -241,11 +243,17 @@ SECTIONS = [
         "Xi, Politburo & US-China": ["Xi Jinping", "Politburo", "Five-Year Plan"],
         "Property, trade, steel & iron ore": ["iron ore", "China property",
             "China exports", "China imports", "China trade", "steel output"],
+        "Chinese & Hong Kong stocks": ["CSI 300", "Hang Seng", "Shanghai Composite",
+            "China stocks", "Chinese stocks", "Hong Kong stocks", "Chinese tech stocks",
+            "China tech stocks", "STAR Market", "Shenzhen"],
      },
      "generic": ["stimulus", "deflation", "property", "exports", "imports",
+                 "home sales", "home prices", "new home", "housing", "developers",
+                 "retail sales", "industrial output", "industrial production",
+                 "credit", "loans", "trade surplus",
                  "trade", "tariffs", "economy", "GDP", "PMI", "factory",
                  "steel", "Xi", "rate cut", "growth", "consumption"],
-     "context": ["China", "Chinese", "Beijing"],
+     "context": ["China", "Chinese", "Beijing", "Hong Kong"],
      "queries": [
         'China (PBOC OR yuan OR stimulus OR property OR Politburo)',
         'China (deflation OR PPI OR CPI OR "yuan fixing")',
@@ -259,6 +267,7 @@ SECTIONS = [
         "NZ election (7 Nov)": ["Luxon", "Hipkins", "NZ election",
             "New Zealand election"],
         "Dairy prices (GDT) & Fonterra": ["GDT", "Global Dairy Trade", "Fonterra"],
+        "NZ stocks": ["NZX"],
      },
      "generic": ["kiwi", "OCR", "inflation", "CPI", "jobs", "unemployment",
                  "election", "economy", "GDP", "dairy", "central bank",
@@ -274,6 +283,7 @@ SECTIONS = [
         "RBA (hiking cycle), CPI & trimmed mean, jobs": ["RBA",
             "Reserve Bank of Australia", "Bullock", "Hauser", "trimmed mean",
             "Australian dollar", "Aussie dollar"],
+        "Australian stocks": ["ASX", "ASX 200", "Australian stocks"],
      },
      "generic": ["inflation", "CPI", "jobs", "unemployment", "wages", "economy",
                  "GDP", "rate hike", "rate hikes", "budget", "iron ore",
@@ -293,6 +303,8 @@ SECTIONS = [
             "Brazilian real", "Brazil real", "Brazil's real"],
         "Treasury bond intervention & DI rates": ["Tesouro", "DI rates",
             "DI futures"],
+        "Brazilian stocks": ["Bovespa", "Ibovespa", "Brazilian stocks",
+            "Brazil stocks"],
      },
      "generic": ["finance minister", "fiscal", "budget", "debt", "Congress",
                  "electoral court", "TSE", "election", "central bank",
@@ -312,6 +324,7 @@ SECTIONS = [
         "Banxico (hawkish turn) & the peso": ["Banxico", "Mexican peso",
             "Mexico's peso"],
         "Sheinbaum & politics": ["Sheinbaum"],
+        "Mexican stocks": ["Mexican stocks", "Mexico stocks", "Mexbol"],
      },
      "generic": ["peso", "tariffs", "trade deal", "trade talks", "annual review",
                  "Greer", "central bank", "inflation", "economy", "GDP",
@@ -336,6 +349,7 @@ SECTIONS = [
         'Iran (US OR strikes OR Hormuz OR ceasefire OR talks)',
      ]},
     {"title": "📈 Global equities & AI trade", "max": 6, "priority": 6,
+     "allow_earnings": True,          # big-tech results move the AI trade
      "topics": {
         "Big index moves": ["Wall Street", "S&P 500", "Nasdaq", "global stocks",
             "stock market", "stock markets", "equity markets", "selloff",
@@ -649,7 +663,10 @@ def search_google(query: str, site: str, status: dict) -> list:
 SKIP_URL_PARTS = ("/videos/", "/audio/", "/podcasts/", "/opinion/", "/live/",
                   "/live-blog", "/newsletters/")
 SKIP_TITLE_RX = re.compile(r"^(watch|listen|live|podcast|video|opinion|"
-                           r"newsletter|explainer|quiz)\b|^.{0,40}\bLive Q&A\b",
+                           r"newsletter|explainer|quiz|odd lots|commentary|"
+                           r"column|editorial|breakingviews)\b|"
+                           r"^.{0,40}\bLive Q&A\b|\b(senior )?reporter\s*:|"
+                           r"\b(correspondent|editor|columnist)\s*:",
                            re.IGNORECASE)
 # A few very common Spanish / Portuguese words; two or more = not English.
 FOREIGN_WORDS = {"de", "la", "el", "los", "las", "que", "en", "y", "para", "con",
@@ -714,21 +731,40 @@ def same_story(a: set, b: set) -> bool:
     jaccard = overlap / len(a | b)
     contain = overlap / min(len(a), len(b))
     return (overlap >= 4 and (jaccard >= 0.45 or contain >= 0.6)) or \
-        (overlap >= 3 and jaccard >= 0.6)
+        (overlap >= 3 and (jaccard >= 0.6 or contain >= 0.75))
+
+
+# Company results: macro sections skip these unless a core keyword is also
+# in the headline (e.g. "BOJ ..." still counts, "Sinopec profits soar" doesn't).
+EARNINGS_RX = re.compile(r"\b(profits?|earnings|revenue|quarterly|"
+                         r"(first|second|third|fourth)[- ]quarter|q[1-4]|"
+                         r"beats? (profit |earnings )?(estimates|forecasts)|"
+                         r"misses (estimates|forecasts)|"
+                         r"raises (its )?(outlook|forecast|guidance)|guidance|"
+                         r"buyback|dividend|ipo|writedown|volumes|cfo|ceo)\b",
+                         re.IGNORECASE)
+EARNINGS_PENALTY = 8      # roughly cancels one headline keyword match
+STOCK_WORDS = ["stocks", "shares", "equities", "stock market", "selloff",
+               "sell-off"]
 
 
 def section_matchers(sec: dict) -> tuple:
     core = [w for kws in sec["topics"].values() for w in kws]
+    generic = list(sec.get("generic") or [])
+    if sec.get("context"):                 # country sections: local stock moves
+        generic += STOCK_WORDS
     return (keyword_regex(core),
-            keyword_regex(sec.get("generic") or ["\x00"]),
-            keyword_regex(sec.get("context") or ["\x00"]))
+            keyword_regex(generic or ["\x00"]),
+            keyword_regex(sec.get("context") or ["\x00"]),
+            sec.get("allow_earnings", False))
 
 
 def match_score(title: str, text: str, matchers: tuple) -> int:
     """0 = not relevant. Core keywords in the headline count most; generic
     keywords count only when a context (country/market) word is present."""
-    core_rx, gen_rx, ctx_rx = matchers
+    core_rx, gen_rx, ctx_rx, allow_earnings = matchers
     core_title = len(set(m.lower() for m in core_rx.findall(title)))
+    penalty = EARNINGS_PENALTY if (not allow_earnings and EARNINGS_RX.search(title)) else 0
     core_any = len(set(m.lower() for m in core_rx.findall(text)))
     has_ctx = bool(ctx_rx.search(text))
     gen_title = len(set(m.lower() for m in gen_rx.findall(title))) if has_ctx else 0
@@ -737,8 +773,9 @@ def match_score(title: str, text: str, matchers: tuple) -> int:
         return 0
     if core_any == 0 and not (has_ctx and gen_title):
         return 0          # generic words only in the summary: too weak
-    return 6 * core_title + 2 * (core_any - core_title) + 2 * gen_title + \
-        (gen_any - gen_title)
+    score = 6 * core_title + 2 * (core_any - core_title) + 2 * gen_title + \
+        (gen_any - gen_title) - penalty
+    return max(score, 0)
 
 
 def fetch_candidates() -> tuple:
@@ -747,32 +784,37 @@ def fetch_candidates() -> tuple:
     A story is a dict: ts, title, link, text, score."""
     status = {}
     cutoff = time.time() - LOOKBACK_HOURS * 3600
-    bloomberg = fetch_bloomberg(status)
-
-    accepted, out = [], {}            # accepted: word sets of stories kept so far
-    for sec in sorted(SECTIONS, key=lambda x: x["priority"]):
-        matchers = section_matchers(sec)
-        # Without Claude only the top `max` are shown, so only those claim
-        # their story (lower-ranked ones stay free for other sections).
-        limit = CANDIDATES_PER_SECTION if os.environ.get("ANTHROPIC_API_KEY") else sec["max"]
-        pool = list(bloomberg)
+    pool = fetch_bloomberg(status)
+    for sec in SECTIONS:
         for q in sec["queries"]:
             for site in GOOGLE_SITES:
                 pool += search_google(q, site, status)
                 time.sleep(0.5)
 
-        scored = []
-        for ts, title, link, _src, text in pool:
-            if ts and ts < cutoff or is_noise(title, link):
-                continue
-            score = match_score(title, text, matchers)
-            if score:
-                scored.append((score, ts, title, link, text))
-        # Best match first; newest first among equals
-        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    # Score every story against every section; it goes to the section it
+    # matches best (ties go to the lower `priority` number).
+    matchers = {sec["title"]: section_matchers(sec) for sec in SECTIONS}
+    order = {sec["title"]: sec["priority"] for sec in SECTIONS}
+    by_section = {sec["title"]: [] for sec in SECTIONS}
+    seen_links = set()
+    for ts, title, link, _src, text in pool:
+        if link in seen_links or (ts and ts < cutoff) or is_noise(title, link):
+            continue
+        seen_links.add(link)
+        scores = [(match_score(title, text, m), -order[t], t) for t, m in matchers.items()]
+        best = max(scores)
+        if best[0] > 0:
+            by_section[best[2]].append((best[0], ts, title, link, text))
 
+    accepted, out = [], {}       # accepted: word sets of stories kept so far
+    for sec in sorted(SECTIONS, key=lambda x: x["priority"]):
+        title_ = sec["title"]
+        # Without Claude only the top `max` are shown, so only those claim
+        # their story (lower-ranked ones stay free for other sections).
+        limit = CANDIDATES_PER_SECTION if os.environ.get("ANTHROPIC_API_KEY") else sec["max"]
         stories = []
-        for score, ts, title, link, text in scored:
+        for score, ts, title, link, text in sorted(by_section[title_],
+                                                   key=lambda x: (x[0], x[1]), reverse=True):
             ws = word_set(title, link)
             if any(same_story(ws, other) for other in accepted):
                 continue                                   # duplicate story
@@ -781,7 +823,7 @@ def fetch_candidates() -> tuple:
                             "text": text, "score": score})
             if len(stories) >= limit:
                 break
-        out[sec["title"]] = stories
+        out[title_] = stories
 
     failed = [name for name, ok in status.items()
               if not name.startswith("_") and not ok]
