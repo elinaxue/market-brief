@@ -738,8 +738,6 @@ def same_story(a: set, b: set) -> bool:
 # in the headline (e.g. "BOJ ..." still counts, "Sinopec profits soar" doesn't).
 EARNINGS_RX = re.compile(r"\b(profits?|earnings|revenue|quarterly|"
                          r"(first|second|third|fourth)[- ]quarter|q[1-4]|"
-                         r"beats? (profit |earnings )?(estimates|forecasts)|"
-                         r"misses (estimates|forecasts)|"
                          r"raises (its )?(outlook|forecast|guidance)|guidance|"
                          r"buyback|dividend|ipo|writedown|volumes|cfo|ceo)\b",
                          re.IGNORECASE)
