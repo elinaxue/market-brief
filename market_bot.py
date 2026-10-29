@@ -20,6 +20,7 @@ import calendar
 import datetime as dt
 import html
 import os
+import re
 import sys
 import time
 from urllib.parse import quote_plus
@@ -49,6 +50,11 @@ FX = {
     "USD/SGD": "USDSGD=X",
 }
 
+# Tickers tried, in order, if the main one above returns nothing.
+FALLBACK_TICKERS = {
+    "USD/CNH": ["USDCNH=X", "CNH=F"],
+}
+
 INDICES = {
     "S&P 500":    "^GSPC",
     "Nasdaq":     "^IXIC",
@@ -65,38 +71,78 @@ INDICES = {
     "Mexico IPC": "^MXX",
 }
 
-# Headlines only from these sites.
-SITES = ["reuters.com", "bloomberg.com"]
-LOOKBACK = "1d"   # how far back to search: "12h", "1d", "2d" ...
+# ---- Headline sources ----------------------------------------------------
+# 1) Bloomberg's official RSS feeds (direct bloomberg.com links). Every story
+#    is matched against each section's `keywords` below.
+BLOOMBERG_FEEDS = [
+    "https://www.bloomberg.com/feeds/news.rss",
+    "https://www.bloomberg.com/feeds/markets/news.rss",
+    "https://www.bloomberg.com/feeds/economics/news.rss",
+    "https://www.bloomberg.com/feeds/politics/news.rss",
+    "https://www.bloomberg.com/feeds/industries/news.rss",
+]
+# 2) Google News searches, run once per site in GOOGLE_SITES using each
+#    section's `queries`. This is the only free route to Reuters headlines.
+GOOGLE_SITES = ["reuters.com", "bloomberg.com"]
 
-# Each section runs several Google News searches (restricted to SITES),
-# merges them, removes duplicates and keeps the newest `max` headlines.
-# Use OR between alternatives and "quotes" for exact phrases.
+LOOKBACK_HOURS = 24   # ignore stories older than this
+
+HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/130.0 Safari/537.36")}
+
+# Each section collects stories from both sources, removes duplicates and
+# keeps the newest `max`.
+#   keywords: words/phrases matched in Bloomberg titles + summaries
+#             (case-insensitive, whole words)
+#   queries:  Google News searches. Use OR between alternatives and
+#             "quotes" for exact phrases.
+# A story only appears once, in the first section it matches.
 SECTIONS = [
-    {"title": "🇯🇵 USD/JPY", "max": 6, "queries": [
+    {"title": "🇯🇵 USD/JPY", "max": 6,
+     "keywords": ["yen", "BOJ", "Bank of Japan", "Japan", "Japanese", "JGB",
+                  "Fed", "Federal Reserve", "FOMC", "Treasury yields",
+                  "Treasuries", "US inflation", "US CPI"],
+     "queries": [
         'yen (intervention OR "excessive moves" OR "speculative moves" OR "finance ministry")',
         '"Bank of Japan" OR BOJ',
         'Japan (CPI OR inflation OR wages OR JGB)',
         '"Federal Reserve" OR "US CPI" OR "US inflation" OR "Treasury yields"',
     ]},
-    {"title": "🇦🇺🇨🇳 Australia / China", "max": 6, "queries": [
+    {"title": "🇦🇺🇨🇳 Australia / China", "max": 6,
+     "keywords": ["Australia", "Australian", "RBA", "Aussie", "China",
+                  "Chinese", "Beijing", "PBOC", "yuan", "iron ore"],
+     "queries": [
         'RBA OR "Reserve Bank of Australia" OR "Australian dollar"',
         'Australia (CPI OR inflation OR jobs OR unemployment)',
         'China (economy OR stimulus OR PBOC OR yuan OR property)',
         '"iron ore" OR "China exports" OR "China trade"',
     ]},
-    {"title": "🇧🇷 Brazil", "max": 5, "queries": [
+    {"title": "🇧🇷 Brazil", "max": 5,
+     "keywords": ["Brazil", "Brazilian", "Lula", "Selic", "Copom"],
+     "queries": [
         'Brazil (fiscal OR budget OR deficit OR spending OR debt)',
         'Brazil (Selic OR Copom OR "central bank" OR "Brazil real")',
     ]},
-    {"title": "🇲🇽 Mexico", "max": 5, "queries": [
+    {"title": "🇲🇽 Mexico", "max": 5,
+     "keywords": ["Mexico", "Mexican", "peso", "Banxico", "Sheinbaum", "USMCA"],
+     "queries": [
         'Mexico (tariff OR tariffs OR trade OR USMCA OR "trade policy")',
         'Mexico (peso OR Banxico OR "central bank")',
     ]},
-    {"title": "📈 Global equities", "max": 4, "queries": [
+    {"title": "📈 Global equities", "max": 4,
+     "keywords": ["stocks", "equities", "Wall Street", "S&P 500", "Nasdaq",
+                  "selloff", "rally", "record high", "shares"],
+     "queries": [
         'stocks ("Wall Street" OR "global markets" OR selloff OR rally OR "record high")',
     ]},
-    {"title": "🌍 Big-picture world news", "max": 6, "queries": [
+    {"title": "🌍 Big-picture world news", "max": 6,
+     "keywords": ["war", "ceasefire", "invasion", "coup", "sanctions",
+                  "tariff", "tariffs", "trade war", "export controls",
+                  "snap election", "resigns", "impeachment",
+                  "state of emergency", "default", "debt crisis",
+                  "bank failure", "emergency rate"],
+     "queries": [
         'war OR ceasefire OR invasion OR coup OR sanctions',
         'tariffs OR "trade war" OR "export controls"',
         '"snap election" OR resigns OR impeachment OR "state of emergency"',
@@ -107,67 +153,151 @@ SECTIONS = [
 # ==========================================================================
 
 
-def fetch_quotes(symbols: dict) -> dict:
-    """Return {name: (last, pct_change_vs_prev_close) or None}."""
-    data = None
-    for attempt in range(3):  # Yahoo occasionally rate-limits; retry gently
+def download(tickers: list):
+    """Daily bars for the last ~2 weeks from Yahoo, with gentle retries."""
+    for attempt in range(3):  # Yahoo occasionally rate-limits
         try:
-            data = yf.download(list(symbols.values()), period="7d", interval="1d",
+            data = yf.download(tickers, period="14d", interval="1d", group_by="column",
                                progress=False, auto_adjust=False, threads=False)
             if data is not None and not data.empty:
-                break
+                return data
         except Exception as e:
             print(f"[prices] attempt {attempt + 1} failed: {e}", file=sys.stderr)
         time.sleep(5 * (attempt + 1))
+    return None
 
-    out = {}
-    for name, sym in symbols.items():
-        try:
-            series = data["Close"][sym].dropna()
-            last, prev = float(series.iloc[-1]), float(series.iloc[-2])
-            out[name] = (last, (last / prev - 1) * 100)
-        except Exception:
-            out[name] = None
+
+def quote_from(data, sym: str) -> dict | None:
+    """Last, previous close, % change and the 5-session (1 week) low/high."""
+    try:
+        df = data.xs(sym, axis=1, level=1) if data.columns.nlevels > 1 else data
+        df = df[["High", "Low", "Close"]].dropna(subset=["Close"])
+        if len(df) < 2:
+            return None
+        last, prev = float(df["Close"].iloc[-1]), float(df["Close"].iloc[-2])
+        week = df.tail(5)
+        lo = float(week[["Low", "Close"]].min().min())
+        hi = float(week[["High", "Close"]].max().max())
+        return {"last": last, "prev": prev, "chg": (last / prev - 1) * 100,
+                "lo": lo, "hi": hi}
+    except Exception:
+        return None
+
+
+def fetch_quotes(symbols: dict) -> dict:
+    """Return {name: quote dict or None}. Tries FALLBACK_TICKERS if needed."""
+    data = download(list(symbols.values()))
+    out = {name: (quote_from(data, sym) if data is not None else None)
+           for name, sym in symbols.items()}
+    for name in [n for n, q in out.items() if q is None and n in FALLBACK_TICKERS]:
+        for alt in FALLBACK_TICKERS[name]:
+            alt_data = download([alt])
+            q = quote_from(alt_data, alt) if alt_data is not None else None
+            if q:
+                out[name] = q
+                break
     return out
 
 
-def search_news(query: str) -> list:
-    """One Google News search -> list of (published_ts, title, link, source)."""
-    sites = " OR ".join(f"site:{s}" for s in SITES)
-    q = quote_plus(f"({sites}) {query} when:{LOOKBACK}")
-    url = f"https://news.google.com/rss/search?q={q}&hl=en-SG&gl=SG&ceid=SG:en"
-    items = []
+def fetch_feed(url: str, label: str) -> list | None:
+    """Download and parse one RSS feed.
+    Returns a list of entries, or None if the request failed or was blocked."""
     try:
-        for e in feedparser.parse(url).entries:
-            title = e.title.rsplit(" - ", 1)[0].strip()   # drop " - Reuters"
-            source = e.get("source", {}).get("title", "")
-            ts = calendar.timegm(e.published_parsed) if e.get("published_parsed") else 0
-            items.append((ts, title, e.link, source))
+        r = requests.get(url, headers=HEADERS, timeout=20)
     except Exception as ex:
-        print(f"[news] '{query}' failed: {ex}", file=sys.stderr)
+        print(f"[news] {label}: request failed: {ex}", file=sys.stderr)
+        return None
+    if r.status_code != 200:
+        print(f"[news] {label}: HTTP {r.status_code}", file=sys.stderr)
+        return None
+    feed = feedparser.parse(r.content)
+    if feed.bozo and not feed.entries:   # e.g. a captcha/consent page, not RSS
+        print(f"[news] {label}: response was not a valid feed", file=sys.stderr)
+        return None
+    return feed.entries
+
+
+def entry_ts(e) -> int:
+    t = e.get("published_parsed") or e.get("updated_parsed")
+    return calendar.timegm(t) if t else 0
+
+
+def keyword_regex(words: list) -> re.Pattern:
+    alts = "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True))
+    return re.compile(rf"(?<!\w)(?:{alts})(?!\w)", re.IGNORECASE)
+
+
+def fetch_bloomberg(status: dict) -> list:
+    """All stories from Bloomberg's RSS feeds -> [(ts, title, link, source, text)]."""
+    items, ok = [], 0
+    for url in BLOOMBERG_FEEDS:
+        entries = fetch_feed(url, f"Bloomberg {url.split('/feeds/')[-1]}")
+        if entries is None:
+            continue
+        ok += 1
+        for e in entries:
+            title = (e.get("title") or "").strip()
+            if not title:
+                continue
+            text = title + " " + re.sub(r"<[^>]+>", " ", e.get("summary", ""))
+            items.append((entry_ts(e), title, e.get("link", ""), "Bloomberg", text))
+        time.sleep(0.3)
+    status["Bloomberg feeds"] = ok > 0
+    print(f"[news] Bloomberg feeds: {ok}/{len(BLOOMBERG_FEEDS)} ok, "
+          f"{len(items)} stories", file=sys.stderr)
     return items
 
 
-def fetch_sections() -> list:
-    """Return [(title, [(ts, title, link, source), ...]), ...]."""
+def search_google(query: str, site: str, status: dict) -> list:
+    """One Google News search on one site -> [(ts, title, link, source, text)]."""
+    if status.get("_google_fails", 0) >= 4 and not status.get("Google News"):
+        return []                       # blocked this run; don't keep trying
+    q = quote_plus(f"site:{site} {query} when:{LOOKBACK_HOURS}h")
+    url = f"https://news.google.com/rss/search?q={q}&hl=en-SG&gl=SG&ceid=SG:en"
+    entries = fetch_feed(url, f"Google News ({site}) '{query[:40]}'")
+    if entries is None:
+        status.setdefault("Google News", False)
+        status["_google_fails"] = status.get("_google_fails", 0) + 1
+        return []
+    status["Google News"] = True
+    items = []
+    for e in entries:
+        title = e.title.rsplit(" - ", 1)[0].strip()   # drop " - Reuters"
+        source = e.get("source", {}).get("title", "") or site
+        items.append((entry_ts(e), title, e.link, source, title))
+    return items
+
+
+def fetch_sections() -> tuple:
+    """Return ([(title, [(ts, title, link, source), ...]), ...], failed_sources)."""
+    status = {}
+    cutoff = time.time() - LOOKBACK_HOURS * 3600
+    bloomberg = fetch_bloomberg(status)
+
     seen, out = set(), []
     for sec in SECTIONS:
-        pool = []
+        rx = keyword_regex(sec["keywords"])
+        pool = [it for it in bloomberg if rx.search(it[4])]
         for q in sec["queries"]:
-            pool += search_news(q)
-            time.sleep(0.5)
+            for site in GOOGLE_SITES:
+                pool += search_google(q, site, status)
+                time.sleep(0.5)
+        pool = [it for it in pool if not it[0] or it[0] >= cutoff]
         pool.sort(key=lambda x: x[0], reverse=True)       # newest first
         picked = []
-        for item in pool:
-            key = item[1].lower()
+        for ts, title, link, src, _ in pool:
+            key = re.sub(r"\W+", " ", title.lower()).strip()
             if key in seen:                                # skip duplicates
                 continue
             seen.add(key)
-            picked.append(item)
+            picked.append((ts, title, link, src))
             if len(picked) >= sec["max"]:
                 break
         out.append((sec["title"], picked))
-    return out
+
+    failed = [name for name, ok in status.items()
+              if not name.startswith("_") and not ok]
+    return out, failed
 
 
 def age(ts: int) -> str:
@@ -178,16 +308,27 @@ def age(ts: int) -> str:
 
 
 def fmt_price_table(quotes: dict, kind: str) -> str:
-    lines = []
+    """One small block per instrument:
+         USD/JPY      157.85   ▼ -0.09%
+           Prev close 157.99
+           Week low   156.20
+           Week high  158.40
+    """
+    blocks = []
     for name, q in quotes.items():
         if q is None:
-            lines.append(f"{name:<10} {'n/a':>11}")
+            blocks.append(f"{name:<12}{'n/a':>11}")
             continue
-        last, chg = q
-        decimals = (2 if "JPY" in name else 4) if kind == "fx" else 2
-        arrow = "▲" if chg > 0 else ("▼" if chg < 0 else "•")
-        lines.append(f"{name:<10} {last:>11,.{decimals}f}  {arrow}{chg:+.2f}%")
-    return "<pre>" + html.escape("\n".join(lines)) + "</pre>"
+        d = (2 if "JPY" in name else 4) if kind == "fx" else 2
+        f = lambda x: f"{x:,.{d}f}"
+        arrow = "▲" if q["chg"] > 0 else ("▼" if q["chg"] < 0 else "•")
+        blocks.append("\n".join([
+            f"{name:<12}{f(q['last']):>11}  {arrow} {q['chg']:+.2f}%",
+            f"  {'Prev close':<10}{f(q['prev']):>11}",
+            f"  {'Week low':<10}{f(q['lo']):>11}",
+            f"  {'Week high':<10}{f(q['hi']):>11}",
+        ]))
+    return "<pre>" + html.escape("\n\n".join(blocks)) + "</pre>"
 
 
 def build_parts() -> list:
@@ -199,9 +340,15 @@ def build_parts() -> list:
     prices = fetch_quotes({**FX, **INDICES})
     parts.append("<b>💱 FX</b>\n" + fmt_price_table({k: prices[k] for k in FX}, "fx"))
     parts.append("<b>📊 Indices</b>\n" + fmt_price_table({k: prices[k] for k in INDICES}, "idx"))
-    parts.append("<i>Prices via Yahoo Finance (may be delayed); % vs previous close.</i>")
+    parts.append("<i>Top line: latest price and % change vs previous close. "
+                 "Week low/high: last 5 trading sessions. "
+                 "Prices via Yahoo Finance, may be delayed.</i>")
 
-    for title, items in fetch_sections():
+    sections, failed = fetch_sections()
+    if failed:
+        parts.append("⚠️ <i>Couldn't reach: " + html.escape(", ".join(failed))
+                     + ". Headlines below come from the other source only.</i>")
+    for title, items in sections:
         if not items:
             parts.append(f"<b>{title}</b>\n<i>Nothing new.</i>")
             continue
