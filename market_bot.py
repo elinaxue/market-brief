@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import time
+import traceback
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
@@ -808,10 +809,11 @@ def build_messages() -> list:
 def visible_len(s: str) -> int:
     """Length Telegram counts: text after HTML tags are removed (links' URLs
     don't count)."""
-    return len(html.unescape(re.sub(r"<[^>]+>", "", s)))
+    text = html.unescape(re.sub(r"<[^>]+>", "", s))
+    return len(text.encode("utf-16-le")) // 2   # Telegram counts UTF-16 units
 
 
-def pack(parts: list, limit: int = 3900) -> list:
+def pack(parts: list, limit: int = 3500) -> list:
     """Group blocks into messages under Telegram's 4096-char limit,
     never cutting through a block (or a line) mid-way."""
     msgs, cur = [], ""
@@ -839,15 +841,27 @@ def check_config(need_chat_id: bool = True) -> None:
                  "then add it as the CHAT_ID secret (or paste it into CONFIG).")
 
 
-def send_telegram(text: str) -> None:
-    r = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML",
-              "disable_web_page_preview": True},
-        timeout=30,
-    )
+class TelegramError(Exception):
+    pass
+
+
+def send_telegram(text: str, html_mode: bool = True) -> None:
+    payload = {"chat_id": CHAT_ID, "text": text, "disable_web_page_preview": True}
+    if html_mode:
+        payload["parse_mode"] = "HTML"
+    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                      json=payload, timeout=30)
     if not r.ok:
-        sys.exit(f"Telegram error {r.status_code}: {r.text}")
+        raise TelegramError(f"Telegram error {r.status_code}: {r.text[:500]}")
+
+
+def report_failure(err: str) -> None:
+    """Best effort: tell the user on Telegram why the brief failed."""
+    print(err, file=sys.stderr)
+    try:
+        send_telegram("⚠️ Market brief failed\n\n" + err[-3500:], html_mode=False)
+    except Exception as ex:
+        print(f"[telegram] could not send failure notice: {ex}", file=sys.stderr)
 
 
 def show_chat_id() -> None:
@@ -875,11 +889,27 @@ if __name__ == "__main__":
     if not args.preview:
         check_config()
 
-    messages = build_messages()
+    try:
+        messages = build_messages()
+    except Exception:
+        if args.preview:
+            raise
+        report_failure("Error while building the brief:\n" + traceback.format_exc())
+        sys.exit(1)
+
     if args.preview:
         print("\n\n----- next message -----\n\n".join(messages))
-    else:
-        for m in messages:
+        sys.exit()
+
+    failed = 0
+    for i, m in enumerate(messages, 1):
+        try:
             send_telegram(m)
-            time.sleep(1)
-        print(f"Sent {len(messages)} message(s).")
+        except TelegramError as ex:
+            failed += 1
+            report_failure(f"Message {i} of {len(messages)} was rejected.\n{ex}\n\n"
+                           f"Start of that message:\n{m[:600]}")
+        time.sleep(1)
+    print(f"Sent {len(messages) - failed} of {len(messages)} message(s).")
+    if failed:
+        sys.exit(1)
