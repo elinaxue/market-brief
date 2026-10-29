@@ -259,8 +259,11 @@ def quote_from(data, sym: str) -> dict | None:
         week = df.tail(5)
         lo = float(week[["Low", "Close"]].min().min())
         hi = float(week[["High", "Close"]].max().max())
+        # Week-over-week: vs the close 5 trading sessions ago
+        wk_ago = float(df["Close"].iloc[-6]) if len(df) >= 6 else None
+        wow = (last / wk_ago - 1) * 100 if wk_ago else None
         return {"last": last, "prev": prev, "chg": (last / prev - 1) * 100,
-                "lo": lo, "hi": hi}
+                "lo": lo, "hi": hi, "wow": wow}
     except Exception:
         return None
 
@@ -481,6 +484,7 @@ def fmt_price_table(quotes: dict, kind: str) -> str:
     """One small block per instrument:
          USD/JPY      157.85   ▼ -0.09%
            Prev close 157.99
+           WoW chg    +0.45%
            Week low   156.20
            Week high  158.40
     """
@@ -492,9 +496,11 @@ def fmt_price_table(quotes: dict, kind: str) -> str:
         d = (2 if "JPY" in name else 4) if kind == "fx" else 2
         f = lambda x: f"{x:,.{d}f}"
         arrow = "▲" if q["chg"] > 0 else ("▼" if q["chg"] < 0 else "•")
+        wow = "n/a" if q["wow"] is None else f"{q['wow']:+.2f}%"
         blocks.append("\n".join([
             f"{name:<12}{f(q['last']):>11}  {arrow} {q['chg']:+.2f}%",
             f"  {'Prev close':<10}{f(q['prev']):>11}",
+            f"  {'WoW chg':<10}{wow:>11}",
             f"  {'Week low':<10}{f(q['lo']):>11}",
             f"  {'Week high':<10}{f(q['hi']):>11}",
         ]))
@@ -512,6 +518,7 @@ def build_messages() -> list:
         "<b>💱 FX</b>\n" + fmt_price_table({k: prices[k] for k in FX}, "fx"),
         "<b>📊 Indices</b>\n" + fmt_price_table({k: prices[k] for k in INDICES}, "idx"),
         "<i>Top line: latest price and % change vs previous close. "
+        "WoW chg: vs the close 5 trading sessions ago. "
         "Week low/high: last 5 trading sessions. "
         "Prices via Yahoo Finance, may be delayed.</i>",
     ]
