@@ -263,13 +263,14 @@ SECTIONS = [
      "topics": {
         "RBNZ, OCR & hike timing": ["RBNZ", "Reserve Bank of New Zealand",
             "official cash rate", "Breman"],
-        "Kiwi dollar": ["NZ dollar", "NZD", "New Zealand dollar"],
+        "Kiwi dollar": ["NZ dollar", "NZD", "New Zealand dollar", "kiwi",
+            "kiwi dollar"],
         "NZ election (7 Nov)": ["Luxon", "Hipkins", "NZ election",
             "New Zealand election"],
         "Dairy prices (GDT) & Fonterra": ["GDT", "Global Dairy Trade", "Fonterra"],
         "NZ stocks": ["NZX"],
      },
-     "generic": ["kiwi", "OCR", "inflation", "CPI", "jobs", "unemployment",
+     "generic": ["OCR", "inflation", "CPI", "jobs", "unemployment",
                  "election", "economy", "GDP", "dairy", "central bank",
                  "rate hike", "Conway", "budget"],
      "context": ["New Zealand", "NZ", "Wellington", "Auckland"],
@@ -736,11 +737,13 @@ def same_story(a: set, b: set) -> bool:
 
 # Company results: macro sections skip these unless a core keyword is also
 # in the headline (e.g. "BOJ ..." still counts, "Sinopec profits soar" doesn't).
-EARNINGS_RX = re.compile(r"\b(profits?|earnings|revenue|quarterly|"
-                         r"(first|second|third|fourth)[- ]quarter|q[1-4]|"
-                         r"raises (its )?(outlook|forecast|guidance)|guidance|"
-                         r"buyback|dividend|ipo|writedown|volumes|cfo|ceo)\b",
+EARNINGS_RX = re.compile(r"\b(profits?|earnings|(?<!tax )revenue|"
+                         r"raises (its )?(outlook|forecast)|"
+                         r"dividend|ipo|writedown|cfo|ceo)\b",
                          re.IGNORECASE)
+# Not in the list on purpose, because macro data and policy stories use
+# them too: Q1-Q4, quarterly, third-quarter (GDP, CPI), guidance (Fed),
+# buyback (Treasury bond buybacks), volumes.
 EARNINGS_PENALTY = 8      # roughly cancels one headline keyword match
 STOCK_WORDS = ["stocks", "shares", "equities", "stock market", "selloff",
                "sell-off"]
@@ -762,7 +765,10 @@ def match_score(title: str, text: str, matchers: tuple) -> int:
     keywords count only when a context (country/market) word is present."""
     core_rx, gen_rx, ctx_rx, allow_earnings = matchers
     core_title = len(set(m.lower() for m in core_rx.findall(title)))
-    penalty = EARNINGS_PENALTY if (not allow_earnings and EARNINGS_RX.search(title)) else 0
+    # Only company news with no core keyword in the headline is penalised, so
+    # "BOJ ..." or "Fed ..." headlines always count.
+    penalty = EARNINGS_PENALTY if (not allow_earnings and core_title == 0
+                                   and EARNINGS_RX.search(title)) else 0
     core_any = len(set(m.lower() for m in core_rx.findall(text)))
     has_ctx = bool(ctx_rx.search(text))
     gen_title = len(set(m.lower() for m in gen_rx.findall(title))) if has_ctx else 0
