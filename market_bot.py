@@ -52,7 +52,6 @@ FX = {
     "USD/MXN": "USDMXN=X",
     "BRL/MXN": "BRLMXN=X",
     "EUR/USD": "EURUSD=X",
-    "USD/SGD": "USDSGD=X",
 }
 
 # Tickers tried, in order, if the main one above returns nothing.
@@ -183,7 +182,7 @@ SECTIONS = [
         'Japan (CPI OR inflation OR wages)',
         'Takaichi (fiscal OR "consumption tax" OR budget) OR "JGB yields"',
      ]},
-    {"title": "🇨🇳🇦🇺 China / Australia", "max": 6, "priority": 2,
+    {"title": "🇨🇳 China", "max": 5, "priority": 2,
      "topics": {
         "PBOC, yuan fixing & stimulus": ["PBOC", "yuan", "renminbi", "fixing",
             "China", "Chinese", "Beijing"],
@@ -191,13 +190,18 @@ SECTIONS = [
         "Xi, Politburo & US-China": ["Xi", "Politburo"],
         "Property, trade, steel & iron ore": ["iron ore", "China property",
             "China exports", "steel output"],
-        "RBA (hiking cycle), monthly CPI & jobs": ["RBA", "Bullock", "Australia",
-            "Australian", "Aussie"],
      },
      "queries": [
         'China (PBOC OR yuan OR stimulus OR property OR Politburo)',
         'China (deflation OR PPI OR CPI OR "yuan fixing")',
         '"China exports" OR "China trade" OR "iron ore" OR "steel output"',
+     ]},
+    {"title": "🇦🇺 Australia", "max": 4, "priority": 2.5,
+     "topics": {
+        "RBA (hiking cycle), monthly CPI & jobs": ["RBA", "Bullock", "Australia",
+            "Australian", "Aussie"],
+     },
+     "queries": [
         'RBA OR "Reserve Bank of Australia" OR Bullock',
         'Australia ("monthly CPI" OR inflation OR jobs OR unemployment)',
      ]},
