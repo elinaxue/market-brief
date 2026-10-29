@@ -81,16 +81,21 @@ INDICES = {
     "VIX":        "^VIX",
 }
 
-# Government bond yields (%). "MOF:<tenor>" = Japan Ministry of Finance daily
-# JGB yields (end of Tokyo day, published ~9:30am Tokyo the next business day).
+# Government bond yields (%).
+#   "FRED:<series>" = official daily US Treasury yields from the St. Louis Fed
+#                     (previous US close; ~1 day lag)
+#   "MOF:<tenor>"   = Japan Ministry of Finance daily JGB yields (end of Tokyo
+#                     day, published ~9:30am Tokyo the next business day)
+#   anything else   = Yahoo Finance ticker
 RATES = {
-    "UST 5Y":  "^FVX",
+    "UST 2Y":  "FRED:DGS2",
     "UST 10Y": "^TNX",
     "JGB 2Y":  "MOF:2Y",
     "JGB 10Y": "MOF:10Y",
 }
 # Spreads shown in basis points: name -> (long leg, short leg)
 SPREADS = {
+    "UST-JGB 2Y":  ("UST 2Y", "JGB 2Y"),    # Fed vs BOJ expectations
     "UST-JGB 10Y": ("UST 10Y", "JGB 10Y"),
 }
 
@@ -454,9 +459,32 @@ def fetch_jgb_yields() -> pd.DataFrame | None:
     return df.tail(30)
 
 
+def fetch_fred(series: str) -> pd.Series | None:
+    """Last ~6 weeks of a daily FRED series (no API key needed)."""
+    start = (dt.date.today() - dt.timedelta(days=45)).isoformat()
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}&cosd={start}"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=30)
+        r.raise_for_status()
+        out = {}
+        for row in list(csv.reader(io.StringIO(r.text)))[1:]:   # skip header
+            if len(row) >= 2:
+                try:
+                    out[pd.Timestamp(row[0])] = float(row[1])
+                except ValueError:
+                    pass                      # "." = no data (holiday)
+        if out:
+            return pd.Series(out).sort_index()
+        print(f"[fred] {series}: no data", file=sys.stderr)
+    except Exception as ex:
+        print(f"[fred] {series}: {ex}", file=sys.stderr)
+    return None
+
+
 def fetch_rates() -> dict:
     """Bond yields (%), plus spreads in basis points."""
-    yahoo = {k: v for k, v in RATES.items() if not v.startswith("MOF:")}
+    yahoo = {k: v for k, v in RATES.items()
+             if not v.startswith(("MOF:", "FRED:"))}
     out = fetch_quotes(yahoo)
     for name, q in out.items():                # ^TNX-style indices can be yield x10
         if q and q["last"] > 20:
@@ -464,6 +492,12 @@ def fetch_rates() -> dict:
                 if q[k] is not None:
                     q[k] /= 10
             q["closes"] = q["closes"] / 10
+
+    for name, src in RATES.items():
+        if src.startswith("FRED:"):
+            c = fetch_fred(src[5:])
+            out[name] = (quote_from_df(pd.DataFrame({"High": c, "Low": c, "Close": c}))
+                         if c is not None else None)
 
     mof = {k: v[4:] for k, v in RATES.items() if v.startswith("MOF:")}
     jgb = fetch_jgb_yields() if mof else None
@@ -488,7 +522,7 @@ def fetch_rates() -> dict:
             if q:
                 q["spread"] = True
         out[name] = q
-    return out
+    return {k: out.get(k) for k in [*RATES, *SPREADS]}
 
 
 def fetch_feed(url: str, label: str) -> list | None:
@@ -712,10 +746,10 @@ def fmt_price_table(quotes: dict, kind: str) -> str:
             continue
         if kind == "rates" and q.get("spread"):
             f = lambda x: f"{x:,.1f}bp"
-            chg = lambda a, b: f"{a - b:+.1f}bp"
+            chg = lambda a, b: f"{round(a - b, 6) + 0:+.1f}bp"
         elif kind == "rates":
             f = lambda x: f"{x:.3f}%"
-            chg = lambda a, b: f"{(a - b) * 100:+.1f}bp"
+            chg = lambda a, b: f"{round((a - b) * 100, 6) + 0:+.1f}bp"
         else:
             if kind == "fx":
                 d = 2 if ("JPY" in name or name == "DXY") else 4
@@ -723,7 +757,7 @@ def fmt_price_table(quotes: dict, kind: str) -> str:
                 d = 3 if abs(q["last"]) < 20 else 2
             f = lambda x, d=d: f"{x:,.{d}f}"
             chg = lambda a, b: f"{(a / b - 1) * 100:+.2f}%"
-        diff = q["last"] - q["prev"]
+        diff = round(q["last"] - q["prev"], 6)      # ignore float noise
         arrow = "▲" if diff > 0 else ("▼" if diff < 0 else "•")
         wow = "n/a" if q["wk_ago"] is None else chg(q["last"], q["wk_ago"])
         blocks.append("\n".join([
@@ -788,8 +822,8 @@ def build_messages() -> list:
         "<i>Top line: latest level and change vs previous close. "
         "WoW chg: vs the close 5 trading sessions ago. "
         "Week low/high: last 5 trading sessions. Yield changes in bp. "
-        "Prices via Yahoo Finance (may be delayed); JGB yields via Japan MOF "
-        "(previous Tokyo close). Gold $/oz, oil $/bbl, copper $/lb.</i>",
+        "Prices via Yahoo Finance (may be delayed); UST 2Y via FRED (previous US "
+        "close); JGB yields via Japan MOF (previous Tokyo close). Gold $/oz, oil $/bbl, copper $/lb.</i>",
     ]
 
     news, failed, used_claude = fetch_news()
