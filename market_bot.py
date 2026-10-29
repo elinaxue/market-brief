@@ -744,6 +744,11 @@ EARNINGS_RX = re.compile(r"\b(profits?|earnings|(?<!tax )revenue|"
 # Not in the list on purpose, because macro data and policy stories use
 # them too: Q1-Q4, quarterly, third-quarter (GDP, CPI), guidance (Fed),
 # buyback (Treasury bond buybacks), volumes.
+# Words that only ever mean company results. These are penalised even when the
+# headline also has a core keyword ("Sinopec profits soar on higher oil
+# prices"). Deliberately NOT here: "earnings" (US payrolls: "average hourly
+# earnings") and "raises forecast" ("RBA raises inflation forecast").
+COMPANY_ONLY_RX = re.compile(r"\b(profits?|writedowns?|dividends?)\b", re.IGNORECASE)
 EARNINGS_PENALTY = 8      # roughly cancels one headline keyword match
 STOCK_WORDS = ["stocks", "shares", "equities", "stock market", "selloff",
                "sell-off"]
@@ -767,8 +772,9 @@ def match_score(title: str, text: str, matchers: tuple) -> int:
     core_title = len(set(m.lower() for m in core_rx.findall(title)))
     # Only company news with no core keyword in the headline is penalised, so
     # "BOJ ..." or "Fed ..." headlines always count.
-    penalty = EARNINGS_PENALTY if (not allow_earnings and core_title == 0
-                                   and EARNINGS_RX.search(title)) else 0
+    penalty = EARNINGS_PENALTY if (not allow_earnings and (
+        (core_title == 0 and EARNINGS_RX.search(title))
+        or COMPANY_ONLY_RX.search(title))) else 0
     core_any = len(set(m.lower() for m in core_rx.findall(text)))
     has_ctx = bool(ctx_rx.search(text))
     gen_title = len(set(m.lower() for m in gen_rx.findall(title))) if has_ctx else 0
