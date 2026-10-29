@@ -19,6 +19,7 @@ import argparse
 import calendar
 import datetime as dt
 import html
+import json
 import os
 import re
 import sys
@@ -91,63 +92,120 @@ HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
                           "Chrome/130.0 Safari/537.36")}
 
-# Each section collects stories from both sources, removes duplicates and
-# keeps the newest `max`.
-#   keywords: words/phrases matched in Bloomberg titles + summaries
-#             (case-insensitive, whole words)
-#   queries:  Google News searches. Use OR between alternatives and
-#             "quotes" for exact phrases.
-# A story only appears once, in the first section it matches.
+# ---- Optional: Claude picks the major stories and writes the 1-phrase briefs.
+# Add an ANTHROPIC_API_KEY secret on GitHub to turn this on. Without it the bot
+# uses keyword matching only, and shows each headline shortened.
+CLAUDE_MODEL = "claude-haiku-5-5"
+CANDIDATES_PER_SECTION = 20   # newest matches per section sent to Claude
+
+# ---- News sections ---------------------------------------------------------
+# Shown in this order. For each section:
+#   topics:   theme -> keywords. A Bloomberg story belongs to the section if
+#             its title/summary contains any keyword (case-insensitive,
+#             whole words). The theme names are also what Claude is told to
+#             prioritise.
+#   queries:  Google News searches (run on Reuters and Bloomberg).
+#             OR between alternatives, "quotes" for exact phrases.
+#   priority: a story matching several sections goes to the one with the
+#             LOWEST number (so "Japan inflation" lands in Japan, not US).
 SECTIONS = [
-    {"title": "🇯🇵 USD/JPY", "max": 6,
-     "keywords": ["yen", "BOJ", "Bank of Japan", "Japan", "Japanese", "JGB",
-                  "Fed", "Federal Reserve", "FOMC", "Treasury yields",
-                  "Treasuries", "US inflation", "US CPI"],
+    {"title": "🇺🇸 US", "max": 6, "priority": 5,
+     "topics": {
+        "Fed decisions & Fed speakers": ["Fed", "Federal Reserve", "FOMC",
+            "Fed chair", "Powell", "Warsh", "Hassett", "rate cut", "rate cuts",
+            "rate hike"],
+        "CPI / PCE inflation": ["US CPI", "US inflation", "consumer prices", "PCE"],
+        "Payrolls & jobs": ["payrolls", "nonfarm", "jobs report", "jobless claims",
+            "US unemployment"],
+        "Midterms & Congress": ["midterm", "midterms", "Congress", "Senate",
+            "House Republicans", "House Democrats", "government shutdown",
+            "debt ceiling"],
+        "Treasuries & White House policy": ["Treasury yields", "Treasuries",
+            "Trump", "White House", "Bessent"],
+     },
      "queries": [
-        'yen (intervention OR "excessive moves" OR "speculative moves" OR "finance ministry")',
-        '"Bank of Japan" OR BOJ',
-        'Japan (CPI OR inflation OR wages OR JGB)',
-        '"Federal Reserve" OR "US CPI" OR "US inflation" OR "Treasury yields"',
-    ]},
-    {"title": "🇦🇺🇨🇳 Australia / China", "max": 6,
-     "keywords": ["Australia", "Australian", "RBA", "Aussie", "China",
-                  "Chinese", "Beijing", "PBOC", "yuan", "iron ore"],
+        '"Federal Reserve" OR FOMC OR "Fed chair" OR "Fed rate"',
+        '"US CPI" OR "US inflation" OR "PCE inflation"',
+        'payrolls OR "jobs report" OR "jobless claims" OR "US unemployment"',
+        'midterms OR "midterm elections" OR "government shutdown" OR Congress',
+        '"Treasury yields" OR Treasuries',
+     ]},
+    {"title": "🇯🇵 Japan", "max": 6, "priority": 1,
+     "topics": {
+        "BOJ decisions & BOJ speakers": ["BOJ", "Bank of Japan", "Ueda", "Himino"],
+        "Verbal escalation, rate checks & intervention (MOF)": ["yen", "rate check",
+            "Katayama", "Mimura", "excessive moves", "speculative moves"],
+        "Japan CPI, wages & JGBs": ["Japan", "Japanese", "JGB", "JGBs", "shunto"],
+        "Japan politics": ["Takaichi", "Diet"],
+     },
      "queries": [
-        'RBA OR "Reserve Bank of Australia" OR "Australian dollar"',
+        '"Bank of Japan" OR BOJ OR Ueda',
+        'yen ("rate check" OR intervention OR excessive OR speculative OR Mimura OR Katayama)',
+        'Japan (CPI OR inflation OR wages OR JGB OR Takaichi)',
+     ]},
+    {"title": "🇨🇳🇦🇺 China / Australia", "max": 6, "priority": 2,
+     "topics": {
+        "PBOC, yuan fixing & stimulus": ["PBOC", "yuan", "renminbi",
+            "China", "Chinese", "Beijing"],
+        "Xi, Politburo & US-China": ["Xi", "Politburo"],
+        "Property, trade & iron ore": ["iron ore", "China property",
+            "China exports"],
+        "RBA & Australian data": ["RBA", "Bullock", "Australia", "Australian", "Aussie"],
+     },
+     "queries": [
+        'China (PBOC OR yuan OR stimulus OR property OR Politburo)',
+        '"China exports" OR "China trade" OR "iron ore"',
+        'RBA OR "Reserve Bank of Australia" OR Bullock',
         'Australia (CPI OR inflation OR jobs OR unemployment)',
-        'China (economy OR stimulus OR PBOC OR yuan OR property)',
-        '"iron ore" OR "China exports" OR "China trade"',
-    ]},
-    {"title": "🇧🇷 Brazil", "max": 5,
-     "keywords": ["Brazil", "Brazilian", "Lula", "Selic", "Copom"],
+     ]},
+    {"title": "🇧🇷 Brazil", "max": 5, "priority": 3,
+     "topics": {
+        "Elections, Lula & Bolsonaro": ["Lula", "Bolsonaro", "Tarcisio",
+            "Tarcísio", "Brazil election"],
+        "Fiscal & budget": ["Haddad", "Brazil budget", "Brazil fiscal"],
+        "BCB, Selic & the real": ["Selic", "Copom", "Galipolo", "Galípolo",
+            "Brazil", "Brazilian"],
+     },
      "queries": [
-        'Brazil (fiscal OR budget OR deficit OR spending OR debt)',
-        'Brazil (Selic OR Copom OR "central bank" OR "Brazil real")',
-    ]},
-    {"title": "🇲🇽 Mexico", "max": 5,
-     "keywords": ["Mexico", "Mexican", "peso", "Banxico", "Sheinbaum", "USMCA"],
+        'Brazil (election OR Lula OR Bolsonaro OR Tarcisio)',
+        'Brazil (fiscal OR budget OR Haddad OR debt)',
+        'Brazil (Selic OR Copom OR "central bank" OR real)',
+     ]},
+    {"title": "🇲🇽 Mexico", "max": 5, "priority": 4,
+     "topics": {
+        "Tariffs & USMCA review": ["USMCA", "Ebrard", "Mexico tariffs"],
+        "Banxico & the peso": ["Banxico", "peso"],
+        "Sheinbaum & politics": ["Sheinbaum", "Mexico", "Mexican"],
+     },
      "queries": [
-        'Mexico (tariff OR tariffs OR trade OR USMCA OR "trade policy")',
-        'Mexico (peso OR Banxico OR "central bank")',
-    ]},
-    {"title": "📈 Global equities", "max": 4,
-     "keywords": ["stocks", "equities", "Wall Street", "S&P 500", "Nasdaq",
-                  "selloff", "rally", "record high", "shares"],
+        'Mexico (tariffs OR USMCA OR "trade review" OR Ebrard)',
+        'Mexico (peso OR Banxico OR Sheinbaum)',
+     ]},
+    {"title": "📈 Global equities", "max": 4, "priority": 6,
+     "topics": {
+        "Big index moves": ["stocks", "equities", "Wall Street", "S&P 500",
+            "Nasdaq", "selloff", "sell-off", "rally", "record high"],
+     },
      "queries": [
         'stocks ("Wall Street" OR "global markets" OR selloff OR rally OR "record high")',
-    ]},
-    {"title": "🌍 Big-picture world news", "max": 6,
-     "keywords": ["war", "ceasefire", "invasion", "coup", "sanctions",
-                  "tariff", "tariffs", "trade war", "export controls",
-                  "snap election", "resigns", "impeachment",
-                  "state of emergency", "default", "debt crisis",
-                  "bank failure", "emergency rate"],
+     ]},
+    {"title": "🌍 World", "max": 6, "priority": 7,
+     "topics": {
+        "War, ceasefires & sanctions": ["war", "ceasefire", "invasion", "coup",
+            "sanctions", "missile", "airstrike", "airstrikes"],
+        "Trade wars & export controls": ["tariff", "tariffs", "trade war",
+            "export controls"],
+        "Elections & political shocks": ["snap election", "resigns", "impeachment",
+            "state of emergency"],
+        "Defaults & crises, oil shocks": ["default", "debt crisis", "bank failure",
+            "emergency rate", "OPEC"],
+     },
      "queries": [
         'war OR ceasefire OR invasion OR coup OR sanctions',
         'tariffs OR "trade war" OR "export controls"',
         '"snap election" OR resigns OR impeachment OR "state of emergency"',
-        'default OR "debt crisis" OR "bank failure" OR "emergency rate"',
-    ]},
+        'default OR "debt crisis" OR "bank failure" OR OPEC',
+     ]},
 ]
 
 # ==========================================================================
@@ -268,15 +326,20 @@ def search_google(query: str, site: str, status: dict) -> list:
     return items
 
 
-def fetch_sections() -> tuple:
-    """Return ([(title, [(ts, title, link, source), ...]), ...], failed_sources)."""
+def fetch_candidates() -> tuple:
+    """Collect stories per section.
+    Returns ({section title: [story, ...]}, failed_sources), newest first.
+    A story is a dict: ts, title, link, text."""
     status = {}
     cutoff = time.time() - LOOKBACK_HOURS * 3600
     bloomberg = fetch_bloomberg(status)
 
-    seen, out = set(), []
-    for sec in SECTIONS:
-        rx = keyword_regex(sec["keywords"])
+    # Match sections in priority order, so a story shared by two sections
+    # lands in the more specific one.
+    seen, out = set(), {}
+    for sec in sorted(SECTIONS, key=lambda x: x["priority"]):
+        words = [w for kws in sec["topics"].values() for w in kws]
+        rx = keyword_regex(words)
         pool = [it for it in bloomberg if rx.search(it[4])]
         for q in sec["queries"]:
             for site in GOOGLE_SITES:
@@ -284,20 +347,96 @@ def fetch_sections() -> tuple:
                 time.sleep(0.5)
         pool = [it for it in pool if not it[0] or it[0] >= cutoff]
         pool.sort(key=lambda x: x[0], reverse=True)       # newest first
-        picked = []
-        for ts, title, link, src, _ in pool:
+        stories = []
+        for ts, title, link, _src, text in pool:
             key = re.sub(r"\W+", " ", title.lower()).strip()
             if key in seen:                                # skip duplicates
                 continue
             seen.add(key)
-            picked.append((ts, title, link, src))
-            if len(picked) >= sec["max"]:
-                break
-        out.append((sec["title"], picked))
+            stories.append({"ts": ts, "title": title, "link": link, "text": text})
+        out[sec["title"]] = stories[:CANDIDATES_PER_SECTION]
 
     failed = [name for name, ok in status.items()
               if not name.startswith("_") and not ok]
     return out, failed
+
+
+def shorten(title: str, limit: int = 70) -> str:
+    """Fallback brief when Claude isn't enabled: the headline, trimmed."""
+    t = re.sub(r"\s+", " ", title).strip()
+    if len(t) <= limit:
+        return t
+    return t[:limit].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
+
+
+def claude_select(cands: dict) -> dict | None:
+    """Ask Claude to pick the major stories per section and write a short
+    brief for each. Returns {section title: [(story, brief), ...]} or None."""
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key or not any(cands.values()):
+        return None
+    lookup, lines = {}, []
+    for sec in SECTIONS:
+        lines.append(f"\n## {sec['title']} (pick up to {sec['max']})")
+        lines.append("Priority themes: " + "; ".join(sec["topics"]))
+        for i, st in enumerate(cands.get(sec["title"], [])):
+            sid = f"{sec['priority']}-{i}"
+            lookup[sid] = (sec["title"], st)
+            hrs = int((time.time() - st["ts"]) / 3600) if st["ts"] else "?"
+            lines.append(f"[{sid}] ({hrs}h ago) {st['title']}")
+    prompt = (
+        "You are preparing a twice-daily macro/FX market brief for a trader. "
+        "Below are recent Reuters and Bloomberg headlines, grouped by market.\n"
+        "For each section, choose the most market-moving stories, favouring the "
+        "priority themes listed (central bank decisions and officials' comments, "
+        "key data releases, elections and major political events, policy shocks). "
+        "Skip minor, company-specific or lifestyle stories, and keep only one "
+        "story per event. It is fine to pick fewer than the maximum, or none.\n"
+        "For each pick, write a brief of at most 8 words that says what happened, "
+        "e.g. 'BOJ holds at 0.75%, signals December hike'. "
+        "Plain text, no source names, no full stop.\n\n"
+        "Reply with JSON only, in this exact shape:\n"
+        '{"picks": [{"id": "1-0", "brief": "..."}, ...]}\n'
+        + "\n".join(lines)
+    )
+    try:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": CLAUDE_MODEL, "max_tokens": 2000,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=90,
+        )
+        if not r.ok:
+            print(f"[claude] HTTP {r.status_code}: {r.text[:300]}", file=sys.stderr)
+            return None
+        text = "".join(b.get("text", "") for b in r.json().get("content", []))
+        picks = json.loads(text[text.index("{"): text.rindex("}") + 1])["picks"]
+    except Exception as ex:
+        print(f"[claude] failed: {ex}", file=sys.stderr)
+        return None
+
+    out = {sec["title"]: [] for sec in SECTIONS}
+    for p in picks:
+        if p.get("id") in lookup and p.get("brief"):
+            title, st = lookup[p["id"]]
+            out[title].append((st, shorten(p["brief"], 80)))
+    for title in out:                                       # newest first
+        out[title].sort(key=lambda x: x[0]["ts"], reverse=True)
+    print(f"[claude] picked {sum(map(len, out.values()))} stories", file=sys.stderr)
+    return out
+
+
+def fetch_news() -> tuple:
+    """Return ({section title: [(story, brief), ...]}, failed_sources, used_claude)."""
+    cands, failed = fetch_candidates()
+    picked = claude_select(cands)
+    if picked is not None:
+        return picked, failed, True
+    maxes = {sec["title"]: sec["max"] for sec in SECTIONS}
+    return ({t: [(st, shorten(st["title"])) for st in sts[:maxes[t]]]
+             for t, sts in cands.items()}, failed, False)
 
 
 def age(ts: int) -> str:
@@ -331,34 +470,47 @@ def fmt_price_table(quotes: dict, kind: str) -> str:
     return "<pre>" + html.escape("\n\n".join(blocks)) + "</pre>"
 
 
-def build_parts() -> list:
-    """Message blocks; packed into Telegram-sized messages later."""
+def build_messages() -> list:
+    """Prices first (one or more messages), then all the news in one message."""
     now = dt.datetime.now(ZoneInfo(TIMEZONE))
     label = "🌅 Morning brief" if now.hour < 12 else "🌙 Evening brief"
-    parts = [f"<b>{label}</b> · {now:%a %d %b, %H:%M}"]
 
     prices = fetch_quotes({**FX, **INDICES})
-    parts.append("<b>💱 FX</b>\n" + fmt_price_table({k: prices[k] for k in FX}, "fx"))
-    parts.append("<b>📊 Indices</b>\n" + fmt_price_table({k: prices[k] for k in INDICES}, "idx"))
-    parts.append("<i>Top line: latest price and % change vs previous close. "
-                 "Week low/high: last 5 trading sessions. "
-                 "Prices via Yahoo Finance, may be delayed.</i>")
+    price_parts = [
+        f"<b>{label}</b> · {now:%a %d %b, %H:%M}",
+        "<b>💱 FX</b>\n" + fmt_price_table({k: prices[k] for k in FX}, "fx"),
+        "<b>📊 Indices</b>\n" + fmt_price_table({k: prices[k] for k in INDICES}, "idx"),
+        "<i>Top line: latest price and % change vs previous close. "
+        "Week low/high: last 5 trading sessions. "
+        "Prices via Yahoo Finance, may be delayed.</i>",
+    ]
 
-    sections, failed = fetch_sections()
+    news, failed, used_claude = fetch_news()
+    news_parts = [f"<b>📰 Headlines</b> · {now:%a %d %b, %H:%M}"]
     if failed:
-        parts.append("⚠️ <i>Couldn't reach: " + html.escape(", ".join(failed))
-                     + ". Headlines below come from the other source only.</i>")
-    for title, items in sections:
+        news_parts.append("⚠️ <i>Couldn't reach: " + html.escape(", ".join(failed))
+                          + ". Showing the other source only.</i>")
+    for sec in SECTIONS:
+        items = news.get(sec["title"], [])
+        lines = [f"<b>{sec['title']}</b>"]
         if not items:
-            parts.append(f"<b>{title}</b>\n<i>Nothing new.</i>")
-            continue
-        lines = [f"<b>{title}</b>"]
-        for ts, t, link, src in items:
-            meta = " · ".join(x for x in (src, age(ts)) if x)
-            lines.append(f"• <a href=\"{html.escape(link)}\">{html.escape(t)}</a>"
-                         + (f" <i>({html.escape(meta)})</i>" if meta else ""))
-        parts.append("\n".join(lines))
-    return parts
+            lines.append("<i>Nothing major.</i>")
+        for st, brief in items:
+            a = age(st["ts"])
+            lines.append(f"• <a href=\"{html.escape(st['link'])}\">{html.escape(brief)}</a>"
+                         + (f" · {a}" if a else ""))
+        news_parts.append("\n".join(lines))
+    if not used_claude:
+        news_parts.append("<i>Keyword-matched headlines. Add an ANTHROPIC_API_KEY "
+                          "secret for curated 1-phrase briefs.</i>")
+
+    return pack(price_parts) + pack(news_parts)
+
+
+def visible_len(s: str) -> int:
+    """Length Telegram counts: text after HTML tags are removed (links' URLs
+    don't count)."""
+    return len(html.unescape(re.sub(r"<[^>]+>", "", s)))
 
 
 def pack(parts: list, limit: int = 3900) -> list:
@@ -366,13 +518,14 @@ def pack(parts: list, limit: int = 3900) -> list:
     never cutting through a block (or a line) mid-way."""
     msgs, cur = [], ""
     for part in parts:
-        chunks = [part] if len(part) <= limit else part.split("\n")
+        chunks = [part] if visible_len(part) <= limit else part.split("\n")
         for c in chunks:
-            if cur and len(cur) + 2 + len(c) > limit:
+            sep = "\n\n" if c is part else "\n"
+            if cur and visible_len(cur) + len(sep) + visible_len(c) > limit:
                 msgs.append(cur)
                 cur = c
             else:
-                cur = f"{cur}\n\n{c}" if cur and c is part else (f"{cur}\n{c}" if cur else c)
+                cur = f"{cur}{sep}{c}" if cur else c
     if cur:
         msgs.append(cur)
     return msgs
@@ -424,7 +577,7 @@ if __name__ == "__main__":
     if not args.preview:
         check_config()
 
-    messages = pack(build_parts())
+    messages = build_messages()
     if args.preview:
         print("\n\n----- next message -----\n\n".join(messages))
     else:
