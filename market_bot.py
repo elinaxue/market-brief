@@ -47,6 +47,8 @@ FX = {
     "DXY":     "DX-Y.NYB",   # US dollar index
     "USD/JPY": "USDJPY=X",
     "AUD/USD": "AUDUSD=X",
+    "NZD/USD": "NZDUSD=X",
+    "AUD/NZD": "AUDNZD=X",
     "USD/CNH": "CNH=X",
     "USD/BRL": "USDBRL=X",
     "USD/MXN": "USDMXN=X",
@@ -62,6 +64,7 @@ FALLBACK_TICKERS = {
 INDICES = {
     "S&P 500":    "^GSPC",
     "Nasdaq":     "^IXIC",
+    "Chips SOX":  "^SOX",    # Philly semiconductor index: proxy for the AI trade
     "Dow":        "^DJI",
     "Euro Stoxx": "^STOXX50E",
     "DAX":        "^GDAXI",
@@ -70,6 +73,7 @@ INDICES = {
     "Hang Seng":  "^HSI",
     "Shanghai":   "000001.SS",
     "ASX 200":    "^AXJO",
+    "NZX 50":     "^NZ50",
     "STI":        "^STI",
     "Bovespa":    "^BVSP",
     "Mexico IPC": "^MXX",
@@ -89,8 +93,40 @@ RATES = {
 # Spreads shown in basis points: name -> (long leg, short leg)
 SPREADS = {
     "UST 2s10s":   ("UST 10Y", "UST 2Y"),
+    "UST-JGB 2Y":  ("UST 2Y", "JGB 2Y"),    # tracks Fed vs BOJ expectations
     "UST-JGB 10Y": ("UST 10Y", "JGB 10Y"),
 }
+
+# ---- Policy rates (update by hand after each decision) --------------------
+# No free feed covers all of these, so this is a manual table. The brief
+# warns you when POLICY_RATES_AS_OF is more than POLICY_RATES_STALE_DAYS old.
+POLICY_RATES = {
+    "Fed":     "3.75-4.00%",
+    "BOJ":     "1.25%",
+    "RBA":     "4.60%",
+    "RBNZ":    "2.75%",
+    "Selic":   "13.75%",
+    "Banxico": "6.50%",
+}
+POLICY_RATES_AS_OF = "2026-10-29"
+POLICY_RATES_STALE_DAYS = 45
+
+# ---- Upcoming events (update by hand) ---------------------------------------
+# (date in the event's own local time, description). The brief lists events
+# from today through the next CALENDAR_DAYS days, and warns you when the list
+# is about to run out. Central-bank dates are published a year ahead.
+CALENDAR_DAYS = 7
+CALENDAR = [
+    ("2026-10-30", "🇯🇵 BOJ decision"),
+    ("2026-11-03", "🇦🇺 RBA decision"),
+    ("2026-11-03", "🇺🇸 US midterm elections"),
+    ("2026-11-04", "🇧🇷 Copom (Selic) decision"),
+    ("2026-11-05", "🇲🇽 Banxico decision"),
+    ("2026-11-07", "🇳🇿 NZ general election"),
+    ("2026-12-09", "🇳🇿 RBNZ decision"),
+    ("2026-12-09", "🇺🇸 FOMC decision (2pm ET = 3am SGT 10 Dec)"),
+    ("2026-12-17", "🇲🇽 Banxico decision"),
+]
 JGB_CSV_URLS = [
     "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/jgbcme.csv",
     "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/historical/jgbcme_all.csv",
@@ -196,14 +232,32 @@ SECTIONS = [
         'China (deflation OR PPI OR CPI OR "yuan fixing")',
         '"China exports" OR "China trade" OR "iron ore" OR "steel output"',
      ]},
-    {"title": "🇦🇺 Australia", "max": 4, "priority": 2.5,
+    {"title": "🇳🇿 New Zealand", "max": 4, "priority": 2.4,
      "topics": {
-        "RBA (hiking cycle), monthly CPI & jobs": ["RBA", "Bullock", "Australia",
-            "Australian", "Aussie"],
+        "RBNZ, OCR & hike timing": ["RBNZ", "Reserve Bank of New Zealand",
+            "OCR", "official cash rate", "Breman", "Conway"],
+        "Kiwi dollar & NZ data": ["kiwi", "New Zealand", "NZ dollar", "NZD"],
+        "NZ election (7 Nov)": ["Luxon", "Hipkins", "NZ election"],
+        "Dairy prices (GDT) & Fonterra": ["dairy", "GDT", "Global Dairy Trade",
+            "Fonterra"],
      },
      "queries": [
-        'RBA OR "Reserve Bank of Australia" OR Bullock',
-        'Australia ("monthly CPI" OR inflation OR jobs OR unemployment)',
+        'RBNZ OR "Reserve Bank of New Zealand" OR "official cash rate" OR Breman',
+        '"New Zealand" (inflation OR election OR "kiwi dollar" OR economy)',
+        '"Global Dairy Trade" OR Fonterra OR "dairy prices"',
+     ]},
+    {"title": "🇦🇺 Australia", "max": 5, "priority": 2.5,
+     "topics": {
+        "RBA (hiking cycle), CPI & trimmed mean, jobs": ["RBA", "Bullock",
+            "Hauser", "trimmed mean", "Australia", "Australian",
+            "Australian dollar", "Aussie"],
+        "Iron ore & China demand for Australia": ["iron ore", "BHP", "Rio Tinto",
+            "Fortescue"],
+     },
+     "queries": [
+        'RBA OR "Reserve Bank of Australia" OR Bullock OR Hauser',
+        'Australia ("monthly CPI" OR "trimmed mean" OR inflation OR jobs OR unemployment)',
+        '"Australian dollar" OR "iron ore price"',
      ]},
     {"title": "🇧🇷 Brazil", "max": 5, "priority": 3,
      "topics": {
@@ -213,11 +267,14 @@ SECTIONS = [
             "Flavio", "Flávio", "electoral court", "TSE"],
         "BCB, Selic & the real": ["Selic", "Copom", "Galipolo", "Galípolo",
             "Brazil", "Brazilian"],
+        "Treasury bond intervention & DI rates": ["Tesouro", "National Treasury",
+            "DI rates", "DI futures", "buyback"],
      },
      "queries": [
         'Brazil ("finance minister" OR fiscal OR budget OR debt OR Haddad)',
         'Lula (Congress OR cabinet OR Bolsonaro OR "electoral court")',
         'Brazil (Selic OR Copom OR "central bank" OR real)',
+        'Brazil ("Treasury" OR "DI rates" OR "bond yields" OR buyback)',
      ]},
     {"title": "🇲🇽 Mexico", "max": 5, "priority": 4,
      "topics": {
@@ -241,13 +298,20 @@ SECTIONS = [
         'oil (Brent OR crude OR OPEC OR prices)',
         'Iran (US OR strikes OR Hormuz OR ceasefire OR talks)',
      ]},
-    {"title": "📈 Global equities", "max": 4, "priority": 6,
+    {"title": "📈 Global equities & AI trade", "max": 6, "priority": 6,
      "topics": {
+        "AI trade & big tech earnings (drives yen safe-haven flows)": ["AI",
+            "artificial intelligence", "Nvidia", "Alphabet", "Google", "Microsoft",
+            "Meta", "Amazon", "Apple", "OpenAI", "Anthropic", "chipmaker",
+            "chipmakers", "semiconductor", "semiconductors", "SK Hynix",
+            "Samsung", "TSMC", "data center", "data centers"],
         "Big index moves": ["stocks", "equities", "Wall Street", "S&P 500",
             "Nasdaq", "selloff", "sell-off", "rally", "record high"],
      },
      "queries": [
         'stocks ("Wall Street" OR "global markets" OR selloff OR rally OR "record high")',
+        '(AI OR "artificial intelligence") (stocks OR earnings OR selloff OR IPO)',
+        'Nvidia OR Alphabet OR Microsoft OR Meta OR "SK Hynix" OR TSMC earnings',
      ]},
     {"title": "🌍 World", "max": 6, "priority": 7,
      "topics": {
@@ -668,6 +732,41 @@ def fmt_price_table(quotes: dict, kind: str) -> str:
     return "<pre>" + html.escape("\n\n".join(blocks)) + "</pre>"
 
 
+def fmt_outlook(today: dt.date) -> str:
+    """Policy-rate line plus the events coming up in the next CALENDAR_DAYS,
+    with warnings when the hand-maintained tables need updating."""
+    lines = ["<b>📅 Coming up</b>"]
+    upcoming, last_date = [], None
+    for d_str, what in CALENDAR:
+        try:
+            d = dt.date.fromisoformat(d_str)
+        except ValueError:
+            print(f"[calendar] bad date: {d_str}", file=sys.stderr)
+            continue
+        last_date = max(last_date, d) if last_date else d
+        days = (d - today).days
+        if 0 <= days <= CALENDAR_DAYS:
+            when = "Today" if days == 0 else ("Tomorrow" if days == 1
+                                              else f"{d:%a %d %b}")
+            upcoming.append((d, f"• {when}: {html.escape(what)}"))
+    if upcoming:
+        lines += [line for _, line in sorted(upcoming, key=lambda x: x[0])]
+    else:
+        lines.append(f"<i>Nothing in the next {CALENDAR_DAYS} days.</i>")
+    if last_date is None or (last_date - today).days < 14:
+        lines.append("⚠️ <i>CALENDAR runs out soon. Add new dates in market_bot.py.</i>")
+
+    rates = " · ".join(f"{k} {v}" for k, v in POLICY_RATES.items())
+    lines.append(f"\n<b>🏛️ Policy rates</b>\n{html.escape(rates)}")
+    try:
+        age_days = (today - dt.date.fromisoformat(POLICY_RATES_AS_OF)).days
+        if age_days > POLICY_RATES_STALE_DAYS:
+            lines.append(f"⚠️ <i>Policy rates last updated {age_days} days ago.</i>")
+    except ValueError:
+        pass
+    return "\n".join(lines)
+
+
 def build_messages() -> list:
     """Prices first (one or more messages), then all the news in one message."""
     now = dt.datetime.now(ZoneInfo(TIMEZONE))
@@ -677,6 +776,7 @@ def build_messages() -> list:
     rates = fetch_rates()
     price_parts = [
         f"<b>{label}</b> · {now:%a %d %b, %H:%M}",
+        fmt_outlook(now.date()),
         "<b>💱 FX</b>\n" + fmt_price_table({k: prices[k] for k in FX}, "fx"),
         "<b>📊 Indices</b>\n" + fmt_price_table({k: prices[k] for k in INDICES}, "idx"),
         "<b>🏦 Rates</b>\n" + fmt_price_table(rates, "rates"),
