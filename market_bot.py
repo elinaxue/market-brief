@@ -98,6 +98,8 @@ HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 CLAUDE_MODEL = "claude-haiku-5-5"
 CANDIDATES_PER_SECTION = 20   # newest matches per section sent to Claude
 
+HEADLINE_MAX = 55   # headlines longer than this are cut to their main clause
+
 # ---- News sections ---------------------------------------------------------
 # Shown in this order. For each section:
 #   topics:   theme -> keywords. A Bloomberg story belongs to the section if
@@ -111,75 +113,96 @@ CANDIDATES_PER_SECTION = 20   # newest matches per section sent to Claude
 SECTIONS = [
     {"title": "🇺🇸 US", "max": 6, "priority": 5,
      "topics": {
-        "Fed decisions & Fed speakers": ["Fed", "Federal Reserve", "FOMC",
-            "Fed chair", "Powell", "Warsh", "Hassett", "rate cut", "rate cuts",
-            "rate hike"],
+        "Fed decisions, Warsh & Fed independence": ["Fed", "Federal Reserve",
+            "FOMC", "Fed chair", "Warsh", "rate cut", "rate cuts", "rate hike",
+            "rate hikes", "Fed independence"],
         "CPI / PCE inflation": ["US CPI", "US inflation", "consumer prices", "PCE"],
         "Payrolls & jobs": ["payrolls", "nonfarm", "jobs report", "jobless claims",
             "US unemployment"],
         "Midterms & Congress": ["midterm", "midterms", "Congress", "Senate",
             "House Republicans", "House Democrats", "government shutdown",
             "debt ceiling"],
-        "Treasuries & White House policy": ["Treasury yields", "Treasuries",
-            "Trump", "White House", "Bessent"],
+        "Tariffs, Treasuries & White House policy": ["Treasury yields",
+            "Treasuries", "Trump", "White House", "US tariffs"],
      },
      "queries": [
         '"Federal Reserve" OR FOMC OR "Fed chair" OR "Fed rate"',
         '"US CPI" OR "US inflation" OR "PCE inflation"',
         'payrolls OR "jobs report" OR "jobless claims" OR "US unemployment"',
         'midterms OR "midterm elections" OR "government shutdown" OR Congress',
+        'Warsh OR "Fed independence" OR "US tariffs"',
         '"Treasury yields" OR Treasuries',
      ]},
     {"title": "🇯🇵 Japan", "max": 6, "priority": 1,
      "topics": {
         "BOJ decisions & BOJ speakers": ["BOJ", "Bank of Japan", "Ueda", "Himino"],
-        "Verbal escalation, rate checks & intervention (MOF)": ["yen", "rate check",
-            "Katayama", "Mimura", "excessive moves", "speculative moves"],
-        "Japan CPI, wages & JGBs": ["Japan", "Japanese", "JGB", "JGBs", "shunto"],
-        "Japan politics": ["Takaichi", "Diet"],
+        "BOJ board dissents": ["Takata", "Tamura"],
+        "Verbal escalation, rate checks & intervention (MOF, US Treasury)": ["yen",
+            "rate check", "rate checks", "Katayama", "Mimura", "excessive moves",
+            "speculative moves", "Bessent"],
+        "Takaichi fiscal plans, consumption tax & JGBs": ["Takaichi",
+            "consumption tax", "JGB", "JGBs", "Diet"],
+        "Japan CPI & wages": ["Japan", "Japanese", "shunto"],
      },
      "queries": [
         '"Bank of Japan" OR BOJ OR Ueda',
-        'yen ("rate check" OR intervention OR excessive OR speculative OR Mimura OR Katayama)',
-        'Japan (CPI OR inflation OR wages OR JGB OR Takaichi)',
+        'yen ("rate check" OR intervention OR excessive OR speculative OR Mimura OR Katayama OR Bessent)',
+        'Japan (CPI OR inflation OR wages)',
+        'Takaichi (fiscal OR "consumption tax" OR budget) OR "JGB yields"',
      ]},
     {"title": "🇨🇳🇦🇺 China / Australia", "max": 6, "priority": 2,
      "topics": {
-        "PBOC, yuan fixing & stimulus": ["PBOC", "yuan", "renminbi",
+        "PBOC, yuan fixing & stimulus": ["PBOC", "yuan", "renminbi", "fixing",
             "China", "Chinese", "Beijing"],
+        "China deflation (CPI/PPI)": ["China CPI", "China PPI", "deflation"],
         "Xi, Politburo & US-China": ["Xi", "Politburo"],
-        "Property, trade & iron ore": ["iron ore", "China property",
-            "China exports"],
-        "RBA & Australian data": ["RBA", "Bullock", "Australia", "Australian", "Aussie"],
+        "Property, trade, steel & iron ore": ["iron ore", "China property",
+            "China exports", "steel output"],
+        "RBA (hiking cycle), monthly CPI & jobs": ["RBA", "Bullock", "Australia",
+            "Australian", "Aussie"],
      },
      "queries": [
         'China (PBOC OR yuan OR stimulus OR property OR Politburo)',
-        '"China exports" OR "China trade" OR "iron ore"',
+        'China (deflation OR PPI OR CPI OR "yuan fixing")',
+        '"China exports" OR "China trade" OR "iron ore" OR "steel output"',
         'RBA OR "Reserve Bank of Australia" OR Bullock',
-        'Australia (CPI OR inflation OR jobs OR unemployment)',
+        'Australia ("monthly CPI" OR inflation OR jobs OR unemployment)',
      ]},
     {"title": "🇧🇷 Brazil", "max": 5, "priority": 3,
      "topics": {
-        "Elections, Lula & Bolsonaro": ["Lula", "Bolsonaro", "Tarcisio",
-            "Tarcísio", "Brazil election"],
-        "Fiscal & budget": ["Haddad", "Brazil budget", "Brazil fiscal"],
+        "Lula's next finance minister & fiscal framework": ["finance minister",
+            "Haddad", "Brazil budget", "Brazil fiscal", "fiscal framework"],
+        "Lula vs Congress, Bolsonaro's election challenge": ["Lula", "Bolsonaro",
+            "Flavio", "Flávio", "electoral court", "TSE"],
         "BCB, Selic & the real": ["Selic", "Copom", "Galipolo", "Galípolo",
             "Brazil", "Brazilian"],
      },
      "queries": [
-        'Brazil (election OR Lula OR Bolsonaro OR Tarcisio)',
-        'Brazil (fiscal OR budget OR Haddad OR debt)',
+        'Brazil ("finance minister" OR fiscal OR budget OR debt OR Haddad)',
+        'Lula (Congress OR cabinet OR Bolsonaro OR "electoral court")',
         'Brazil (Selic OR Copom OR "central bank" OR real)',
      ]},
     {"title": "🇲🇽 Mexico", "max": 5, "priority": 4,
      "topics": {
-        "Tariffs & USMCA review": ["USMCA", "Ebrard", "Mexico tariffs"],
-        "Banxico & the peso": ["Banxico", "peso"],
+        "USMCA annual reviews & US tariffs": ["USMCA", "Ebrard", "Greer",
+            "Mexico tariffs", "annual review"],
+        "Banxico (hawkish turn) & the peso": ["Banxico", "peso"],
         "Sheinbaum & politics": ["Sheinbaum", "Mexico", "Mexican"],
      },
      "queries": [
-        'Mexico (tariffs OR USMCA OR "trade review" OR Ebrard)',
+        'Mexico (tariffs OR USMCA OR "annual review" OR Ebrard OR Greer)',
         'Mexico (peso OR Banxico OR Sheinbaum)',
+     ]},
+    {"title": "🛢️ Oil & Middle East", "max": 5, "priority": 0,
+     "topics": {
+        "US-Iran conflict & Strait of Hormuz": ["Iran", "Iranian", "Tehran",
+            "Hormuz", "Middle East", "Israel", "Gulf"],
+        "Oil prices & OPEC": ["oil", "crude", "Brent", "WTI", "OPEC", "OPEC+",
+            "Saudi"],
+     },
+     "queries": [
+        'oil (Brent OR crude OR OPEC OR prices)',
+        'Iran (US OR strikes OR Hormuz OR ceasefire OR talks)',
      ]},
     {"title": "📈 Global equities", "max": 4, "priority": 6,
      "topics": {
@@ -197,14 +220,14 @@ SECTIONS = [
             "export controls"],
         "Elections & political shocks": ["snap election", "resigns", "impeachment",
             "state of emergency"],
-        "Defaults & crises, oil shocks": ["default", "debt crisis", "bank failure",
-            "emergency rate", "OPEC"],
+        "Defaults & crises": ["default", "debt crisis", "bank failure",
+            "emergency rate"],
      },
      "queries": [
         'war OR ceasefire OR invasion OR coup OR sanctions',
         'tariffs OR "trade war" OR "export controls"',
         '"snap election" OR resigns OR impeachment OR "state of emergency"',
-        'default OR "debt crisis" OR "bank failure" OR OPEC',
+        'default OR "debt crisis" OR "bank failure" OR "emergency rate"',
      ]},
 ]
 
@@ -343,7 +366,8 @@ def fetch_candidates() -> tuple:
         pool = [it for it in bloomberg if rx.search(it[4])]
         for q in sec["queries"]:
             for site in GOOGLE_SITES:
-                pool += search_google(q, site, status)
+                # keep Google results only if they also mention a section keyword
+                pool += [it for it in search_google(q, site, status) if rx.search(it[4])]
                 time.sleep(0.5)
         pool = [it for it in pool if not it[0] or it[0] >= cutoff]
         pool.sort(key=lambda x: x[0], reverse=True)       # newest first
@@ -361,11 +385,18 @@ def fetch_candidates() -> tuple:
     return out, failed
 
 
-def shorten(title: str, limit: int = 70) -> str:
-    """Fallback brief when Claude isn't enabled: the headline, trimmed."""
+def shorten(title: str, limit: int = HEADLINE_MAX) -> str:
+    """Short, skimmable headline: keep the main clause, then trim to `limit`."""
     t = re.sub(r"\s+", " ", title).strip()
     if len(t) <= limit:
         return t
+    # Keep the part before a clause break if it says enough on its own,
+    # e.g. "Yen slides as BOJ holds rates" -> "Yen slides".
+    for sep in [": ", "; ", " - ", ", ", " as ", " after ", " amid ", " while ",
+                " despite ", " with ", " if ", " on ", " ahead of "]:
+        head = re.split(re.escape(sep), t, maxsplit=1, flags=re.IGNORECASE)[0]
+        if 15 <= len(head) <= limit and head != t:
+            return head
     return t[:limit].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
 
 
@@ -496,13 +527,8 @@ def build_messages() -> list:
         if not items:
             lines.append("<i>Nothing major.</i>")
         for st, brief in items:
-            a = age(st["ts"])
-            lines.append(f"• <a href=\"{html.escape(st['link'])}\">{html.escape(brief)}</a>"
-                         + (f" · {a}" if a else ""))
+            lines.append(f"• <a href=\"{html.escape(st['link'])}\">{html.escape(brief)}</a>")
         news_parts.append("\n".join(lines))
-    if not used_claude:
-        news_parts.append("<i>Keyword-matched headlines. Add an ANTHROPIC_API_KEY "
-                          "secret for curated 1-phrase briefs.</i>")
 
     return pack(price_parts) + pack(news_parts)
 
