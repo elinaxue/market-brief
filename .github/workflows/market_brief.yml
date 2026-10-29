@@ -1,0 +1,30 @@
+name: Market brief
+
+on:
+  schedule:
+    # GitHub schedules are in UTC. Singapore = UTC+8.
+    # Set a few minutes early because GitHub often starts scheduled runs late.
+    - cron: "55 0 * * *"    # ~09:00 SGT  (morning brief)
+    - cron: "55 12 * * *"   # ~21:00 SGT  (evening brief)
+  workflow_dispatch:         # adds a "Run workflow" button for manual tests
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install packages
+        run: pip install -r requirements.txt
+
+      - name: Build and send the brief
+        run: python market_bot.py
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
