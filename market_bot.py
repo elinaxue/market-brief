@@ -17,8 +17,10 @@ you can instead paste them into the two lines below.
 
 import argparse
 import calendar
+import csv
 import datetime as dt
 import html
+import io
 import json
 import os
 import re
@@ -28,6 +30,7 @@ from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
 import feedparser
+import pandas as pd
 import requests
 import yfinance as yf
 
@@ -41,6 +44,7 @@ TIMEZONE = "Asia/Singapore"
 # Display name -> Yahoo Finance ticker. If one shows "n/a", look the pair up
 # on finance.yahoo.com and paste the exact ticker it uses.
 FX = {
+    "DXY":     "DX-Y.NYB",   # US dollar index
     "USD/JPY": "USDJPY=X",
     "AUD/USD": "AUDUSD=X",
     "USD/CNH": "CNH=X",
@@ -70,6 +74,35 @@ INDICES = {
     "STI":        "^STI",
     "Bovespa":    "^BVSP",
     "Mexico IPC": "^MXX",
+    "VIX":        "^VIX",
+}
+
+# Government bond yields (%). "MOF:<tenor>" = Japan Ministry of Finance daily
+# JGB yields (end of Tokyo day, published ~9:30am Tokyo the next business day).
+RATES = {
+    "UST 2Y":  "2YY=F",     # CME 2-year yield futures (Yahoo has no 2Y cash index)
+    "UST 10Y": "^TNX",
+    "UST 30Y": "^TYX",
+    "JGB 2Y":  "MOF:2Y",
+    "JGB 10Y": "MOF:10Y",
+    "JGB 30Y": "MOF:30Y",
+}
+# Spreads shown in basis points: name -> (long leg, short leg)
+SPREADS = {
+    "UST 2s10s":   ("UST 10Y", "UST 2Y"),
+    "UST-JGB 10Y": ("UST 10Y", "JGB 10Y"),
+}
+JGB_CSV_URLS = [
+    "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/jgbcme.csv",
+    "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/historical/jgbcme_all.csv",
+    "https://www.mof.go.jp/jgbs/reference/interest_rate/jgbcm.csv",
+]
+
+COMMODITIES = {
+    "Gold":   "GC=F",
+    "Brent":  "BZ=F",
+    "WTI":    "CL=F",
+    "Copper": "HG=F",
 }
 
 # ---- Headline sources ----------------------------------------------------
@@ -248,22 +281,27 @@ def download(tickers: list):
     return None
 
 
+def quote_from_df(df) -> dict | None:
+    """From daily High/Low/Close rows: last, previous close, the close 5
+    sessions ago (for week-over-week) and the 5-session low/high."""
+    df = df[["High", "Low", "Close"]].dropna(subset=["Close"])
+    if len(df) < 2:
+        return None
+    week = df.tail(5)
+    return {
+        "last": float(df["Close"].iloc[-1]),
+        "prev": float(df["Close"].iloc[-2]),
+        "wk_ago": float(df["Close"].iloc[-6]) if len(df) >= 6 else None,
+        "lo": float(week[["Low", "Close"]].min().min()),
+        "hi": float(week[["High", "Close"]].max().max()),
+        "closes": df["Close"],
+    }
+
+
 def quote_from(data, sym: str) -> dict | None:
-    """Last, previous close, % change and the 5-session (1 week) low/high."""
     try:
         df = data.xs(sym, axis=1, level=1) if data.columns.nlevels > 1 else data
-        df = df[["High", "Low", "Close"]].dropna(subset=["Close"])
-        if len(df) < 2:
-            return None
-        last, prev = float(df["Close"].iloc[-1]), float(df["Close"].iloc[-2])
-        week = df.tail(5)
-        lo = float(week[["Low", "Close"]].min().min())
-        hi = float(week[["High", "Close"]].max().max())
-        # Week-over-week: vs the close 5 trading sessions ago
-        wk_ago = float(df["Close"].iloc[-6]) if len(df) >= 6 else None
-        wow = (last / wk_ago - 1) * 100 if wk_ago else None
-        return {"last": last, "prev": prev, "chg": (last / prev - 1) * 100,
-                "lo": lo, "hi": hi, "wow": wow}
+        return quote_from_df(df)
     except Exception:
         return None
 
@@ -280,6 +318,111 @@ def fetch_quotes(symbols: dict) -> dict:
             if q:
                 out[name] = q
                 break
+    return out
+
+
+ERAS = {"S": 1925, "H": 1988, "R": 2018}   # Showa / Heisei / Reiwa year offsets
+
+
+def parse_mof_date(text: str):
+    text = text.strip()
+    for fmt in ("%Y/%m/%d", "%Y-%m-%d", "%Y.%m.%d"):
+        try:
+            return dt.datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+    m = re.match(r"([SHR])(\d+)\.(\d+)\.(\d+)$", text)   # e.g. R8.10.28
+    if m:
+        return dt.date(ERAS[m[1]] + int(m[2]), int(m[3]), int(m[4]))
+    return None
+
+
+def fetch_jgb_yields() -> pd.DataFrame | None:
+    """Daily JGB yields from Japan's Ministry of Finance: rows = dates,
+    columns = tenors like '2Y', '10Y'. Tries the current-month file first and
+    falls back to the historical files when it is too short (early in a month)."""
+    rows = {}
+    for url in JGB_CSV_URLS:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=30)
+            r.raise_for_status()
+        except Exception as ex:
+            print(f"[jgb] {url}: {ex}", file=sys.stderr)
+            continue
+        text = None
+        for enc in ("utf-8-sig", "shift_jis", "cp932"):
+            try:
+                text = r.content.decode(enc)
+                break
+            except UnicodeDecodeError:
+                pass
+        if text is None:
+            continue
+        header = None
+        for line in csv.reader(io.StringIO(text)):
+            if not line:
+                continue
+            if header is None:
+                # Header row: first cell is the date label, then 1Y, 2Y ...
+                if len(line) > 3 and re.match(r"^\s*1\s*(Y|年)", line[1] or ""):
+                    header = [re.sub(r"\s|年", "", c).upper().replace("Y", "") + "Y"
+                              for c in line[1:]]
+                continue
+            d = parse_mof_date(line[0])
+            if not d:
+                continue
+            vals = {}
+            for tenor, v in zip(header, line[1:]):
+                try:
+                    vals[tenor] = float(v)
+                except ValueError:
+                    pass                      # "-" means no data
+            if vals:
+                rows[d] = vals
+        if len(rows) >= 7:                    # enough for prev + week ago
+            break
+    if not rows:
+        print("[jgb] no data", file=sys.stderr)
+        return None
+    df = pd.DataFrame.from_dict(rows, orient="index").sort_index()
+    df.index = pd.to_datetime(df.index)
+    return df.tail(30)
+
+
+def fetch_rates() -> dict:
+    """Bond yields (%), plus spreads in basis points."""
+    yahoo = {k: v for k, v in RATES.items() if not v.startswith("MOF:")}
+    out = fetch_quotes(yahoo)
+    for name, q in out.items():                # ^TNX-style indices can be yield x10
+        if q and q["last"] > 20:
+            for k in ("last", "prev", "wk_ago", "lo", "hi"):
+                if q[k] is not None:
+                    q[k] /= 10
+            q["closes"] = q["closes"] / 10
+
+    mof = {k: v[4:] for k, v in RATES.items() if v.startswith("MOF:")}
+    jgb = fetch_jgb_yields() if mof else None
+    for name, tenor in mof.items():
+        q = None
+        if jgb is not None and tenor in jgb.columns:
+            c = jgb[tenor].dropna()
+            q = quote_from_df(pd.DataFrame({"High": c, "Low": c, "Close": c}))
+        out[name] = q
+
+    for name, (long_leg, short_leg) in SPREADS.items():
+        a, b = out.get(long_leg), out.get(short_leg)
+        q = None
+        if a and b:
+            # Line the two series up by date (calendar day) before subtracting
+            la = a["closes"].copy(); la.index = la.index.normalize().tz_localize(None) \
+                if la.index.tz is not None else la.index.normalize()
+            lb = b["closes"].copy(); lb.index = lb.index.normalize().tz_localize(None) \
+                if lb.index.tz is not None else lb.index.normalize()
+            sp = ((la - lb).dropna() * 100)
+            q = quote_from_df(pd.DataFrame({"High": sp, "Low": sp, "Close": sp}))
+            if q:
+                q["spread"] = True
+        out[name] = q
     return out
 
 
@@ -487,18 +630,32 @@ def fmt_price_table(quotes: dict, kind: str) -> str:
            WoW chg    +0.45%
            Week low   156.20
            Week high  158.40
+    For bond yields (kind="rates") changes are in basis points (bp), and
+    spreads are shown in bp throughout.
     """
     blocks = []
     for name, q in quotes.items():
         if q is None:
             blocks.append(f"{name:<12}{'n/a':>11}")
             continue
-        d = (2 if "JPY" in name else 4) if kind == "fx" else 2
-        f = lambda x: f"{x:,.{d}f}"
-        arrow = "▲" if q["chg"] > 0 else ("▼" if q["chg"] < 0 else "•")
-        wow = "n/a" if q["wow"] is None else f"{q['wow']:+.2f}%"
+        if kind == "rates" and q.get("spread"):
+            f = lambda x: f"{x:,.1f}bp"
+            chg = lambda a, b: f"{a - b:+.1f}bp"
+        elif kind == "rates":
+            f = lambda x: f"{x:.3f}%"
+            chg = lambda a, b: f"{(a - b) * 100:+.1f}bp"
+        else:
+            if kind == "fx":
+                d = 2 if ("JPY" in name or name == "DXY") else 4
+            else:
+                d = 3 if abs(q["last"]) < 20 else 2
+            f = lambda x, d=d: f"{x:,.{d}f}"
+            chg = lambda a, b: f"{(a / b - 1) * 100:+.2f}%"
+        diff = q["last"] - q["prev"]
+        arrow = "▲" if diff > 0 else ("▼" if diff < 0 else "•")
+        wow = "n/a" if q["wk_ago"] is None else chg(q["last"], q["wk_ago"])
         blocks.append("\n".join([
-            f"{name:<12}{f(q['last']):>11}  {arrow} {q['chg']:+.2f}%",
+            f"{name:<12}{f(q['last']):>11}  {arrow} {chg(q['last'], q['prev'])}",
             f"  {'Prev close':<10}{f(q['prev']):>11}",
             f"  {'WoW chg':<10}{wow:>11}",
             f"  {'Week low':<10}{f(q['lo']):>11}",
@@ -512,15 +669,19 @@ def build_messages() -> list:
     now = dt.datetime.now(ZoneInfo(TIMEZONE))
     label = "🌅 Morning brief" if now.hour < 12 else "🌙 Evening brief"
 
-    prices = fetch_quotes({**FX, **INDICES})
+    prices = fetch_quotes({**FX, **INDICES, **COMMODITIES})
+    rates = fetch_rates()
     price_parts = [
         f"<b>{label}</b> · {now:%a %d %b, %H:%M}",
         "<b>💱 FX</b>\n" + fmt_price_table({k: prices[k] for k in FX}, "fx"),
         "<b>📊 Indices</b>\n" + fmt_price_table({k: prices[k] for k in INDICES}, "idx"),
-        "<i>Top line: latest price and % change vs previous close. "
+        "<b>🏦 Rates</b>\n" + fmt_price_table(rates, "rates"),
+        "<b>🛢️ Commodities</b>\n" + fmt_price_table({k: prices[k] for k in COMMODITIES}, "cmd"),
+        "<i>Top line: latest level and change vs previous close. "
         "WoW chg: vs the close 5 trading sessions ago. "
-        "Week low/high: last 5 trading sessions. "
-        "Prices via Yahoo Finance, may be delayed.</i>",
+        "Week low/high: last 5 trading sessions. Yield changes in bp. "
+        "Prices via Yahoo Finance (may be delayed); JGB yields via Japan MOF "
+        "(previous Tokyo close). Gold $/oz, oil $/bbl, copper $/lb.</i>",
     ]
 
     news, failed, used_claude = fetch_news()
