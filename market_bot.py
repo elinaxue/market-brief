@@ -84,7 +84,7 @@ INDICES = {
 # Government bond yields (%). "MOF:<tenor>" = Japan Ministry of Finance daily
 # JGB yields (end of Tokyo day, published ~9:30am Tokyo the next business day).
 RATES = {
-    "UST 2Y":  "2YY=F",     # CME 2-year yield futures (Yahoo has no 2Y cash index)
+    "UST 5Y":  "^FVX",
     "UST 10Y": "^TNX",
     "UST 30Y": "^TYX",
     "JGB 2Y":  "MOF:2Y",
@@ -93,8 +93,6 @@ RATES = {
 }
 # Spreads shown in basis points: name -> (long leg, short leg)
 SPREADS = {
-    "UST 2s10s":   ("UST 10Y", "UST 2Y"),
-    "UST-JGB 2Y":  ("UST 2Y", "JGB 2Y"),    # tracks Fed vs BOJ expectations
     "UST-JGB 10Y": ("UST 10Y", "JGB 10Y"),
 }
 
