@@ -89,7 +89,6 @@ RATES = {
     "UST 30Y": "^TYX",
     "JGB 2Y":  "MOF:2Y",
     "JGB 10Y": "MOF:10Y",
-    "JGB 30Y": "MOF:30Y",
 }
 # Spreads shown in basis points: name -> (long leg, short leg)
 SPREADS = {
