@@ -1129,6 +1129,14 @@ def diagnose() -> None:
         msg = re.sub(r"\s+", " ", msg)[:900].replace("%", "%25")
         print(f"::warning title={title}::{msg}")
 
+    try:
+        block = fmt_price_table(fetch_rates(), "rates")
+        body = re.sub(r"</?pre>", "", html.unescape(block))
+        for chunk in body.split("\n\n"):
+            note("Rates block", chunk.replace("\n", " / "))
+    except Exception:
+        note("Rates block", "ERROR " + traceback.format_exc()[-800:])
+
     start = (dt.date.today() - dt.timedelta(days=45)).isoformat()
     probes = [("Treasury", treasury_url(dt.date.today().year)),
               ("FRED", f"https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS2&cosd={start}")]
@@ -1151,14 +1159,6 @@ def diagnose() -> None:
                            (r.content[-600:].decode('utf-8', 'replace')).splitlines()[-2:]))
         except Exception as ex:
             note(name, f"request failed: {ex}")
-
-    try:
-        block = fmt_price_table(fetch_rates(), "rates")
-        body = re.sub(r"</?pre>", "", html.unescape(block))
-        for chunk in body.split("\n\n"):
-            note("Rates block", chunk.replace("\n", " / "))
-    except Exception:
-        note("Rates block", "ERROR " + traceback.format_exc()[-800:])
 
     t = fetch_treasury("2 Yr")
     note("Parsed UST 2Y", "none" if t is None else f"{len(t)} rows, last {t.index[-1].date()} = {t.iloc[-1]}")
