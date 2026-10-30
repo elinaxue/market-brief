@@ -1152,6 +1152,14 @@ def diagnose() -> None:
         except Exception as ex:
             note(name, f"request failed: {ex}")
 
+    try:
+        block = fmt_price_table(fetch_rates(), "rates")
+        body = re.sub(r"</?pre>", "", html.unescape(block))
+        for chunk in body.split("\n\n"):
+            note("Rates block", chunk.replace("\n", " / "))
+    except Exception:
+        note("Rates block", "ERROR " + traceback.format_exc()[-800:])
+
     t = fetch_treasury("2 Yr")
     note("Parsed UST 2Y", "none" if t is None else f"{len(t)} rows, last {t.index[-1].date()} = {t.iloc[-1]}")
     j = fetch_jgb_yields()
