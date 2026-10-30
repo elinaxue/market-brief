@@ -82,13 +82,14 @@ INDICES = {
 }
 
 # Government bond yields (%).
-#   "FRED:<series>" = official daily US Treasury yields from the St. Louis Fed
-#                     (previous US close; ~1 day lag)
+#   "UST:<column>"  = US Treasury's official daily par yield curve (same-day,
+#                     published after the US close); falls back to FRED
+#   "FRED:<series>" = St. Louis Fed copy of the same data (~1 day lag)
 #   "MOF:<tenor>"   = Japan Ministry of Finance daily JGB yields (end of Tokyo
 #                     day, published ~9:30am Tokyo the next business day)
 #   anything else   = Yahoo Finance ticker
 RATES = {
-    "UST 2Y":  "FRED:DGS2",
+    "UST 2Y":  "UST:2 Yr",
     "UST 10Y": "^TNX",
     "JGB 2Y":  "MOF:2Y",
     "JGB 10Y": "MOF:10Y",
@@ -129,6 +130,8 @@ CALENDAR = [
     ("2026-12-09", "🇺🇸 FOMC decision (2pm ET = 3am SGT 10 Dec)"),
     ("2026-12-17", "🇲🇽 Banxico decision"),
 ]
+UST_FRED_BACKUP = {"1 Yr": "DGS1", "2 Yr": "DGS2", "5 Yr": "DGS5",
+                   "10 Yr": "DGS10", "30 Yr": "DGS30"}
 JGB_CSV_URLS = [
     "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/jgbcme.csv",
     "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/historical/jgbcme_all.csv",
@@ -518,6 +521,38 @@ def fetch_jgb_yields() -> pd.DataFrame | None:
     return df.tail(30)
 
 
+def treasury_url(year: int) -> str:
+    return ("https://home.treasury.gov/resource-center/data-chart-center/"
+            f"interest-rates/daily-treasury-rates.csv/{year}/all"
+            f"?type=daily_treasury_yield_curve&field_tdr_date_value={year}"
+            "&page&_format=csv")
+
+
+def fetch_treasury(column: str) -> pd.Series | None:
+    """Daily par yields from the US Treasury, e.g. column '2 Yr'."""
+    out = {}
+    year = dt.date.today().year
+    for y in (year, year - 1):                 # early January: need last year too
+        try:
+            r = requests.get(treasury_url(y), headers=HEADERS, timeout=30)
+            r.raise_for_status()
+            rows = list(csv.DictReader(io.StringIO(r.content.decode("utf-8-sig"))))
+            for row in rows:
+                try:
+                    out[pd.Timestamp(dt.datetime.strptime(row["Date"], "%m/%d/%Y"))] = \
+                        float(row[column])
+                except (KeyError, ValueError, TypeError):
+                    pass
+        except Exception as ex:
+            print(f"[treasury] {y}: {ex}", file=sys.stderr)
+        if len(out) >= 7:
+            break
+    if out:
+        return pd.Series(out).sort_index().tail(30)
+    print(f"[treasury] {column}: no data", file=sys.stderr)
+    return None
+
+
 def fetch_fred(series: str) -> pd.Series | None:
     """Last ~6 weeks of a daily FRED series (no API key needed)."""
     start = (dt.date.today() - dt.timedelta(days=45)).isoformat()
@@ -543,7 +578,7 @@ def fetch_fred(series: str) -> pd.Series | None:
 def fetch_rates() -> dict:
     """Bond yields (%), plus spreads in basis points."""
     yahoo = {k: v for k, v in RATES.items()
-             if not v.startswith(("MOF:", "FRED:"))}
+             if not v.startswith(("MOF:", "FRED:", "UST:"))}
     out = fetch_quotes(yahoo)
     for name, q in out.items():                # ^TNX-style indices can be yield x10
         if q and q["last"] > 20:
@@ -553,8 +588,14 @@ def fetch_rates() -> dict:
             q["closes"] = q["closes"] / 10
 
     for name, src in RATES.items():
-        if src.startswith("FRED:"):
+        c = "skip"
+        if src.startswith("UST:"):
+            c = fetch_treasury(src[4:])
+            if c is None and src[4:] in UST_FRED_BACKUP:
+                c = fetch_fred(UST_FRED_BACKUP[src[4:]])
+        elif src.startswith("FRED:"):
             c = fetch_fred(src[5:])
+        if not isinstance(c, str):
             out[name] = (quote_from_df(pd.DataFrame({"High": c, "Low": c, "Close": c}))
                          if c is not None else None)
 
@@ -1081,6 +1122,44 @@ def pack(parts: list, limit: int = 3500) -> list:
     return msgs
 
 
+def diagnose() -> None:
+    """Report what each bond-yield source returns, as GitHub warning
+    annotations (readable even when the full run log isn't)."""
+    def note(title, msg):
+        msg = re.sub(r"\s+", " ", msg)[:900].replace("%", "%25")
+        print(f"::warning title={title}::{msg}")
+
+    start = (dt.date.today() - dt.timedelta(days=45)).isoformat()
+    probes = [("Treasury", treasury_url(dt.date.today().year)),
+              ("FRED", f"https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS2&cosd={start}")]
+    probes += [(f"MOF {i + 1}", u) for i, u in enumerate(JGB_CSV_URLS)]
+    for name, url in probes:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=30)
+            raw = r.content[:2500]
+            text = None
+            for enc in ("utf-8-sig", "shift_jis", "cp932"):
+                try:
+                    text = raw.decode(enc)
+                    break
+                except UnicodeDecodeError:
+                    pass
+            lines = (text or repr(raw)).splitlines()
+            note(name, f"HTTP {r.status_code}, {r.headers.get('content-type')}, "
+                       f"{len(r.content)} bytes, final URL {r.url} || "
+                       + " | ".join(lines[:4]) + " || last: " + " | ".join(
+                           (r.content[-600:].decode('utf-8', 'replace')).splitlines()[-2:]))
+        except Exception as ex:
+            note(name, f"request failed: {ex}")
+
+    t = fetch_treasury("2 Yr")
+    note("Parsed UST 2Y", "none" if t is None else f"{len(t)} rows, last {t.index[-1].date()} = {t.iloc[-1]}")
+    j = fetch_jgb_yields()
+    note("Parsed JGB", "none" if j is None else
+         f"{len(j)} rows, last {j.index[-1].date()}, cols {list(j.columns)[:6]}, "
+         f"2Y={j['2Y'].iloc[-1] if '2Y' in j else 'missing'} 10Y={j['10Y'].iloc[-1] if '10Y' in j else 'missing'}")
+
+
 def check_config(need_chat_id: bool = True) -> None:
     """Stop with a clear message if the token / chat id were never filled in."""
     if TELEGRAM_TOKEN.startswith("PASTE_"):
@@ -1166,7 +1245,12 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--preview", action="store_true")
     p.add_argument("--chat-id", action="store_true")
+    p.add_argument("--diagnose", action="store_true")
     args = p.parse_args()
+
+    if args.diagnose:
+        diagnose()
+        sys.exit()
 
     if args.chat_id:
         check_config(need_chat_id=False)
